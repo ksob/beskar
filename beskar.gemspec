@@ -25,4 +25,5 @@ Built as a mountable Rails Engine, it leverages core framework features like Act
   end
 
   spec.add_dependency "rails", ">= 8.0.0"
+  spec.add_development_dependency "devise"
 end
