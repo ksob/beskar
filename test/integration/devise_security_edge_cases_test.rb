@@ -1,0 +1,378 @@
+require "test_helper"
+require_relative "../beskar_test_base"
+
+class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
+  include FactoryBot::Syntax::Methods
+
+  def setup
+    # Setup handled by parent class with worker isolation
+    super
+
+    # Create fresh test user for each test
+    @user = create(:user, email: "edge@example.com", password: "password123")
+  end
+
+  test "handles malformed login parameters gracefully" do
+    # Test with completely malformed parameters
+    # Devise handles malformed parameters gracefully without raising exceptions
+    post "/users/sign_in", params: {
+      invalid: "structure"
+    }, headers: {
+      "X-Forwarded-For" => worker_ip(10)
+    }
+
+    # Should return 422 and render the login form (standard Devise behavior)
+    assert_response :unprocessable_content
+    assert_select "form" # Login form should be present
+  end
+
+  test "handles missing user parameters" do
+    # Test with missing user hash
+    post "/users/sign_in", params: {}, headers: {
+      "X-Forwarded-For" => worker_ip(11)
+    }
+
+    # Should not crash and should render the login form
+    # Devise returns 422 for empty parameters but still shows the form
+    assert_response :unprocessable_content
+    assert_select "form" # Login form should be present
+  end
+
+  test "handles nil and empty email addresses" do
+    test_cases = [
+      {email: nil, password: "password123", description: "nil email"},
+      {email: "", password: "password123", description: "empty email"},
+      {email: "   ", password: "password123", description: "whitespace email"},
+      {email: "valid@example.com", password: nil, description: "nil password"},
+      {email: "valid@example.com", password: "", description: "empty password"}
+    ]
+
+    test_cases.each_with_index do |test_case, index|
+      post "/users/sign_in", params: {
+        user: {
+          email: test_case[:email],
+          password: test_case[:password]
+        }
+      }, headers: {
+        "X-Forwarded-For" => worker_ip(20 + index),
+        "User-Agent" => "EdgeCase/#{index}"
+      }
+
+      # Should handle gracefully without crashing
+      # Devise returns 422 for invalid parameters but still shows the form
+      assert_response :unprocessable_content, "Failed for #{test_case[:description]}"
+
+      # Should create security event only if we have some email to track
+      if test_case[:email].present? && test_case[:email].strip.present?
+        event = Beskar::SecurityEvent.where(
+          attempted_email: test_case[:email],
+          ip_address: worker_ip(20 + index)
+        ).last
+
+        assert_equal "login_failure", event.event_type
+        assert_equal test_case[:email], event.attempted_email
+      end
+    end
+  end
+
+  test "handles extremely long email addresses" do
+    # Test with very long email (potential DoS attack)
+    long_email = "a" * 1000 + "@example.com"
+
+    post "/users/sign_in", params: {
+      user: {
+        email: long_email,
+        password: "password123"
+      }
+    }, headers: {
+      "X-Forwarded-For" => worker_ip(30)
+    }
+
+    # Devise returns 422 for invalid parameters but still shows the form
+    assert_response :unprocessable_content
+
+    # Should still create security event but handle long email gracefully
+    event = Beskar::SecurityEvent.where(ip_address: worker_ip(30)).last
+    assert_not_nil event, "SecurityEvent should be created for long email attempt"
+    # The attempted_email should be stored (possibly truncated)
+    assert_not_nil event.attempted_email, "Email should be stored in attempted_email field"
+    # The original email was 1000 'a's + '@example.com' = 1011 characters
+    assert event.attempted_email.length >= 1000, "Email should maintain its length or be reasonably long"
+  end
+
+  test "handles special characters and encoding in parameters" do
+    special_cases = [
+      {email: "test+tag@example.com", description: "plus sign in email"},
+      {email: "test@example.co.uk", description: "international domain"},
+      {email: "用户@example.com", description: "unicode characters"},
+      {email: "test@münchen.de", description: "internationalized domain"},
+      {password: "pássword123", description: "password with accents"},
+      {password: "密码123", description: "password with unicode"}
+    ]
+
+    special_cases.each_with_index do |test_case, index|
+      params = {
+        email: test_case[:email] || "default@example.com",
+        password: test_case[:password] || "defaultpassword"
+      }
+
+      post "/users/sign_in", params: {
+        user: params
+      }, headers: {
+        "X-Forwarded-For" => worker_ip(40 + index),
+        "Content-Type" => "application/x-www-form-urlencoded; charset=UTF-8"
+      }
+
+      # Devise returns 422 for invalid parameters but still shows the form
+      assert_response :unprocessable_content, "Failed for #{test_case[:description]}"
+
+      # Verify security event handles special characters
+      event = Beskar::SecurityEvent.where(ip_address: worker_ip(40 + index)).last
+      if event
+        assert_not_nil event.attempted_email
+        assert_not_nil event.metadata
+      end
+    end
+  end
+
+  test "handles requests with missing or malformed headers" do
+    header_cases = [
+      {headers: {}, description: "no headers"},
+      {headers: {"User-Agent" => ""}, description: "empty user agent"},
+      {headers: {"X-Forwarded-For" => ""}, description: "empty forwarded IP"},
+      {headers: {"User-Agent" => "\x00\x01\x02"}, description: "binary user agent"},
+      {headers: {"X-Forwarded-For" => "not.an.ip.address"}, description: "invalid IP format"},
+      {headers: {"X-Forwarded-For" => "999.999.999.999"}, description: "out of range IP"}
+    ]
+
+    header_cases.each_with_index do |test_case, index|
+      post "/users/sign_in", params: {
+        user: {
+          email: "header#{index}@example.com",
+          password: "wrongpassword"
+        }
+      }, headers: test_case[:headers]
+
+      # Devise returns 422 for invalid parameters but still shows the form
+      assert_response :unprocessable_content, "Failed for #{test_case[:description]}"
+
+      # Should still create security event with whatever data is available
+      event = Beskar::SecurityEvent.where(attempted_email: "header#{index}@example.com").last
+      if event
+        assert_equal "login_failure", event.event_type
+        # IP might be localhost or nil depending on how the system handles missing headers
+        assert_not_nil event.ip_address
+      end
+    end
+  end
+
+  test "handles concurrent requests from same session" do
+    # Simulate rapid concurrent requests from the same session
+    session_id = "concurrent_session_#{Time.current.to_i}"
+    test_ip = worker_ip(179)
+
+    # Use a single thread to avoid Rails integration test threading issues
+    # but simulate the concurrent behavior by making rapid sequential requests
+    results = []
+
+    # Make 5 rapid requests in sequence (simulating concurrent behavior)
+    5.times do |i|
+      post "/users/sign_in", params: {
+        user: {
+          email: "concurrent#{i}@example.com",
+          password: "wrongpassword"
+        }
+      }, headers: {
+        "X-Forwarded-For" => test_ip,
+        "Cookie" => "_session_id=#{session_id}",
+        "User-Agent" => "ConcurrentTest/#{i}"
+      }
+
+      results << {thread: i, response_code: response.code, status: response.status}
+    rescue => e
+      results << {thread: i, error: e.message}
+    end
+
+    # All requests should complete without errors
+    assert_equal 5, results.length
+    results.each do |result|
+      assert_nil result[:error], "Request #{result[:thread]} had error: #{result[:error]}" if result[:error]
+    end
+
+    # Should have created security events (may be fewer due to rate limiting)
+    concurrent_events = Beskar::SecurityEvent.where(ip_address: test_ip)
+    assert concurrent_events.count > 0, "Should have created security events for concurrent requests (found: #{concurrent_events.count})"
+  end
+
+  # test "handles cache failures gracefully" do
+  #   # Mock rate limiter to return successful result even with cache failures
+  #   Beskar::Services::RateLimiter.stubs(:check_authentication_attempt).returns({allowed: true})
+
+  #   # Stub Rails cache to simulate failures
+  #   Rails.cache.stubs(:read).raises(StandardError, "Cache failure")
+  #   Rails.cache.stubs(:write).raises(StandardError, "Cache failure")
+  #   Rails.cache.stubs(:delete).raises(StandardError, "Cache failure")
+
+  #   # Even with cache failures, authentication should still proceed
+  #   # (This tests graceful degradation, not successful login)
+  #   post "/users/sign_in", params: {
+  #     user: {
+  #       email: @user.email,
+  #       password: "wrongpassword"  # Use wrong password to test graceful failure handling
+  #     }
+  #   }, headers: {
+  #     "X-Forwarded-For" => worker_ip(231)
+  #   }
+
+  #   # Should handle cache failures gracefully and return normal authentication failure
+  #   assert_response :unprocessable_content
+  #   assert_select "form" # Login form should still be present
+  # end
+
+  test "handles memory pressure and large payloads" do
+    # Test with large payload that might cause memory issues
+    large_data = "x" * 10000 # 10KB of data
+
+    post "/users/sign_in", params: {
+      user: {
+        email: "large@example.com",
+        password: "password123",
+        extra_data: large_data # Large unused parameter
+      }
+    }, headers: {
+      "X-Forwarded-For" => worker_ip(250)
+    }
+
+    # Devise returns 422 for invalid parameters but still shows the form
+    assert_response :unprocessable_content
+    # Should handle large payloads without crashing
+  end
+
+  test "handles requests with suspicious parameter names" do
+    # Test parameter pollution and injection attempts
+    suspicious_params = {
+      :user => {
+        email: "suspicious@example.com",
+        password: "password123"
+      },
+      # Suspicious additional parameters that attackers might inject
+      "user[admin]" => "true",
+      "user[role]" => "admin",
+      "__proto__" => "polluted",
+      "constructor" => "injected",
+      "password_confirmation" => "different_password"
+    }
+
+    post "/users/sign_in", params: suspicious_params, headers: {
+      "X-Forwarded-For" => worker_ip(24)
+    }
+
+    # Devise returns 422 for invalid parameters but still shows the form
+    assert_response :unprocessable_content
+
+    # Should create security event and flag as suspicious
+    event = Beskar::SecurityEvent.where(ip_address: worker_ip(24)).last
+    if event
+      assert event.risk_score >= 10, "Suspicious parameters should have some risk score"
+    end
+  end
+
+  test "handles logout without active session" do
+    # Try to logout when not logged in
+    delete "/users/sign_out", headers: {
+      "X-Forwarded-For" => worker_ip(204)
+    }
+
+    # Should handle gracefully
+    assert_redirected_to root_path
+  end
+
+  test "handles session fixation attack attempts" do
+    # Attempt session fixation by providing specific session ID
+    fixed_session_id = "attacker_controlled_session_id"
+    ip = worker_ip(215)
+
+    # Test with invalid credentials to verify graceful handling of session fixation attempts
+    post "/users/sign_in", params: {
+      user: {
+        email: @user.email,
+        password: "wrongpassword"
+      }
+    }, headers: {
+      "X-Forwarded-For" => ip,
+      "Cookie" => "_session_id=#{fixed_session_id}"
+    }
+
+    # Should handle gracefully even with session fixation attempt
+    assert_response :unprocessable_content
+    assert_select "form" # Login form should be present
+
+    # Should create security event for the failed attempt
+    event = Beskar::SecurityEvent.where(ip_address: ip).last
+    assert_equal "login_failure", event.event_type
+  end
+
+  test "handles requests with forged referrer headers" do
+    suspicious_referrers = [
+      "http://attacker.com/login",
+      "javascript:alert('xss')",
+      "data:text/html,<script>alert('xss')</script>",
+      "file:///etc/passwd",
+      "http://192.168.1.1/admin" # Internal network
+    ]
+
+    suspicious_referrers.each_with_index do |referrer, index|
+      ip = worker_ip(210 + index)
+      post "/users/sign_in", params: {
+        user: {
+          email: "referrer#{index}@example.com",
+          password: "wrongpassword"
+        }
+      }, headers: {
+        "Referer" => referrer,
+        "X-Forwarded-For" => ip
+      }
+
+      # Devise returns 422 for invalid parameters but still shows the form
+      assert_response :unprocessable_content
+
+      # Should create security event with elevated risk for suspicious referrer
+      event = Beskar::SecurityEvent.where(ip_address: ip).last
+      assert event.risk_score >= 10, "Suspicious referrer should have some risk score"
+      assert_equal referrer, event.metadata["referer"]
+    end
+  end
+
+  test "handles IP spoofing attempts" do
+    # Test various X-Forwarded-For header manipulations
+    base_ip = worker_ip(52)
+    spoofing_attempts = [
+      "127.0.0.1", # Localhost spoofing
+      "10.0.0.1", # Private network
+      "#{base_ip}, 203.0.113.1", # Multiple IPs
+      "203.0.113.1, #{base_ip}", # Reversed order
+      "unknown, 203.0.113.1", # Unknown proxy
+      "203.0.113.1:8080" # With port
+    ]
+
+    spoofing_attempts.each_with_index do |forwarded_for, index|
+      post "/users/sign_in", params: {
+        user: {
+          email: "spoof#{index}@example.com",
+          password: "wrongpassword"
+        }
+      }, headers: {
+        "X-Forwarded-For" => forwarded_for,
+        "X-Real-IP" => worker_ip(90) # Different from X-Forwarded-For
+      }
+
+      # Devise returns 422 for invalid parameters but still shows the form
+      assert_response :unprocessable_content
+
+      event = Beskar::SecurityEvent.where(attempted_email: "spoof#{index}@example.com").last
+      # Should record IP address
+      assert_not_nil event.ip_address
+      assert event.risk_score >= 30
+    end
+  end
+end

@@ -16,11 +16,17 @@ Rails.application.configure do
   config.eager_load = ENV["CI"].present?
 
   # Configure public file server for tests with cache-control for performance.
-  config.public_file_server.headers = { "cache-control" => "public, max-age=3600" }
+  config.public_file_server.headers = {"cache-control" => "public, max-age=3600"}
 
   # Show full error reports.
   config.consider_all_requests_local = true
-  config.cache_store = :null_store
+
+  # Configure cache store with worker isolation for parallel testing
+  worker_id = ENV["TEST_ENV_NUMBER"] || "0"
+  config.cache_store = :memory_store, {
+    namespace: "beskar_test_#{worker_id}_#{$$}",
+    expires_in: 1.hour
+  }
 
   # Render exception templates for rescuable exceptions and raise for other exceptions.
   config.action_dispatch.show_exceptions = :rescuable
@@ -37,7 +43,7 @@ Rails.application.configure do
   config.action_mailer.delivery_method = :test
 
   # Set host to be used by links generated in mailer templates.
-  config.action_mailer.default_url_options = { host: "example.com" }
+  config.action_mailer.default_url_options = {host: "example.com"}
 
   # Print deprecation notices to the stderr.
   config.active_support.deprecation = :stderr

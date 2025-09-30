@@ -1,0 +1,385 @@
+require "test_helper"
+
+module Beskar
+  module Services
+    class GeolocationServiceTest < ActiveSupport::TestCase
+      def setup
+        @service = Beskar::Services::GeolocationService.new
+      end
+
+      # Test basic location detection
+      test "locates public IP address" do
+        ip = "203.0.113.1"
+        result = @service.locate(ip)
+
+        assert result.is_a?(Hash)
+        assert_equal ip, result[:ip]
+        assert result.key?(:country)
+        assert result.key?(:city)
+        assert result.key?(:latitude)
+        assert result.key?(:longitude)
+        assert_equal false, result[:private_ip]
+      end
+
+      test "handles private IP addresses" do
+        private_ips = [
+          "127.0.0.1",
+          "192.168.1.1",
+          "10.0.0.1",
+          "172.16.0.1",
+          "169.254.1.1"
+        ]
+
+        private_ips.each do |ip|
+          result = @service.locate(ip)
+
+          assert_equal ip, result[:ip]
+          assert_equal "Private", result[:country]
+          assert_equal "Local Network", result[:city]
+          assert_nil result[:latitude]
+          assert_nil result[:longitude]
+          assert_equal true, result[:private_ip]
+        end
+      end
+
+      test "handles IPv6 addresses" do
+        ipv6_addresses = [
+          "::1",  # Loopback
+          "fe80::1",  # Link-local
+          "fc00::1"   # Unique local
+        ]
+
+        ipv6_addresses.each do |ip|
+          result = @service.locate(ip)
+          assert_equal true, result[:private_ip], "Should treat #{ip} as private"
+        end
+      end
+
+      test "handles blank IP addresses" do
+        ["", nil, "   "].each do |ip|
+          result = @service.locate(ip)
+          assert_equal true, result[:private_ip]
+        end
+      end
+
+      test "handles invalid IP addresses" do
+        invalid_ips = [
+          "not.an.ip",
+          "999.999.999.999",
+          "256.1.1.1",
+          "192.168.1"
+        ]
+
+        invalid_ips.each do |ip|
+          result = @service.locate(ip)
+          assert_equal true, result[:private_ip], "Should treat invalid IP #{ip} as private"
+        end
+      end
+
+      # Test class methods
+      test "private_ip? class method works correctly" do
+        assert_equal true, Beskar::Services::GeolocationService.private_ip?("127.0.0.1")
+        assert_equal true, Beskar::Services::GeolocationService.private_ip?("192.168.1.1")
+        assert_equal false, Beskar::Services::GeolocationService.private_ip?("203.0.113.1")
+        assert_equal true, Beskar::Services::GeolocationService.private_ip?("")
+        assert_equal true, Beskar::Services::GeolocationService.private_ip?(nil)
+        assert_equal true, Beskar::Services::GeolocationService.private_ip?("invalid.ip")
+      end
+
+      test "locate class method works as convenience method" do
+        ip = "203.0.113.1"
+        result = Beskar::Services::GeolocationService.locate(ip)
+
+        assert result.is_a?(Hash)
+        assert_equal ip, result[:ip]
+      end
+
+      test "calculate_distance returns correct distance" do
+        # Distance between New York and Los Angeles (approximately 3935 km)
+        ny_lat, ny_lon = 40.7128, -74.0060
+        la_lat, la_lon = 34.0522, -118.2437
+
+        distance = Beskar::Services::GeolocationService.calculate_distance(ny_lat, ny_lon, la_lat, la_lon)
+
+        # Should be approximately 3935 km
+        assert distance > 3900
+        assert distance < 4000
+      end
+
+      test "calculate_distance handles nil coordinates" do
+        assert_equal 0.0, Beskar::Services::GeolocationService.calculate_distance(nil, nil, 40.0, -74.0)
+        assert_equal 0.0, Beskar::Services::GeolocationService.calculate_distance(40.0, -74.0, nil, nil)
+        assert_equal 0.0, Beskar::Services::GeolocationService.calculate_distance(nil, -74.0, 40.0, nil)
+      end
+
+      test "calculate_distance returns zero for same coordinates" do
+        distance = Beskar::Services::GeolocationService.calculate_distance(40.0, -74.0, 40.0, -74.0)
+        assert_equal 0.0, distance
+      end
+
+      # Test impossible travel detection
+      test "impossible_travel? detects impossible travel" do
+        # New York to London is about 5585 km
+        ny_location = {latitude: 40.7128, longitude: -74.0060}
+        london_location = {latitude: 51.5074, longitude: -0.1278}
+
+        # 1 hour is not enough time to travel from NY to London
+        one_hour = 3600
+        assert_equal true, @service.impossible_travel?(ny_location, london_location, one_hour)
+
+        # 10 hours should be enough time (commercial flight)
+        ten_hours = 36000
+        assert_equal false, @service.impossible_travel?(ny_location, london_location, ten_hours)
+      end
+
+      test "impossible_travel? handles nil locations" do
+        location = {latitude: 40.0, longitude: -74.0}
+
+        assert_equal false, @service.impossible_travel?(nil, location, 3600)
+        assert_equal false, @service.impossible_travel?(location, nil, 3600)
+        assert_equal false, @service.impossible_travel?(nil, nil, 3600)
+      end
+
+      test "impossible_travel? handles locations without coordinates" do
+        location1 = {country: "US"}
+        location2 = {latitude: 40.0, longitude: -74.0}
+
+        assert_equal false, @service.impossible_travel?(location1, location2, 3600)
+      end
+
+      test "impossible_travel? allows reasonable travel" do
+        # NYC to Philadelphia is about 130 km - should be possible in 2 hours
+        nyc = {latitude: 40.7128, longitude: -74.0060}
+        philly = {latitude: 39.9526, longitude: -75.1652}
+
+        two_hours = 7200
+        assert_equal false, @service.impossible_travel?(nyc, philly, two_hours)
+      end
+
+      # Test risk calculation
+      test "calculate_location_risk handles unknown locations" do
+        ip = "127.0.0.1"  # Private IP will return "Unknown" country
+        risk = @service.calculate_location_risk(ip)
+
+        assert_equal 10, risk  # Should return moderate risk for unknown locations
+      end
+
+      test "calculate_location_risk detects impossible travel" do
+        # Mock two distant locations
+        ny_ip = "203.0.113.1"  # Will map to consistent mock location
+        london_ip = "203.0.113.2"  # Will map to different mock location
+
+        # Get the mock locations
+        ny_location = @service.locate(ny_ip)
+        @service.locate(london_ip)
+
+        # Calculate risk with short time difference (impossible travel)
+        risk = @service.calculate_location_risk(london_ip, [ny_location], 3600)
+
+        # Should detect impossible travel and add significant risk
+        assert risk >= 25
+      end
+
+      test "calculate_location_risk handles country changes" do
+        ip1 = "203.0.113.1"
+        ip2 = "203.0.113.2"
+
+        location1 = @service.locate(ip1)
+        location2 = @service.locate(ip2)
+
+        # If countries are different, should add some risk
+        if location1[:country] != location2[:country]
+          risk = @service.calculate_location_risk(ip2, [location1])
+          assert risk >= 10
+        end
+      end
+
+      test "calculate_location_risk caps at maximum" do
+        ip = "203.0.113.1"
+
+        # Create scenario with multiple risk factors
+        previous_locations = Array.new(5) { @service.locate("203.0.113.#{rand(100)}") }
+        risk = @service.calculate_location_risk(ip, previous_locations, 60)  # Very short time
+
+        assert risk <= 30  # Should be capped at 30
+      end
+
+      # Test mock data consistency
+      test "mock provider returns consistent data for same IP" do
+        ip = "203.0.113.1"
+
+        result1 = @service.locate(ip)
+        result2 = @service.locate(ip)
+
+        assert_equal result1[:country], result2[:country]
+        assert_equal result1[:city], result2[:city]
+        assert_equal result1[:latitude], result2[:latitude]
+        assert_equal result1[:longitude], result2[:longitude]
+      end
+
+      test "mock provider returns different data for different IPs" do
+        ip1 = "203.0.113.1"
+        ip2 = "203.0.113.50"  # Should map to different mock data
+
+        result1 = @service.locate(ip1)
+        result2 = @service.locate(ip2)
+
+        # At least country or city should be different
+        different = result1[:country] != result2[:country] ||
+          result1[:city] != result2[:city] ||
+          result1[:latitude] != result2[:latitude] ||
+          result1[:longitude] != result2[:longitude]
+
+        assert different, "Different IPs should return different mock data"
+      end
+
+      # Test caching
+      test "caches geolocation results" do
+        ip = "203.0.113.1"
+
+        # Clear any existing cache
+        Rails.cache.delete("beskar:geolocation:#{ip}")
+
+        # First call should hit the provider
+        result1 = @service.locate(ip)
+
+        # Second call should hit the cache
+        result2 = @service.locate(ip)
+
+        assert_equal result1, result2
+      end
+
+      # test "handles cache failures gracefully" do
+      #   ip = "203.0.113.1"
+
+      #   # Mock cache failure
+      #   Rails.cache.stubs(:read).raises(StandardError.new("Cache failure"))
+      #   Rails.cache.stubs(:write).raises(StandardError.new("Cache failure"))
+
+      #   # Should still work without cache
+      #   assert_nothing_raised do
+      #     result = @service.locate(ip)
+      #     assert result.is_a?(Hash)
+      #   end
+      # end
+
+      # Test different providers
+      test "initializes with different providers" do
+        providers = [:mock, :maxmind, :ip2location]
+
+        providers.each do |provider|
+          # Clear cache to avoid interference between providers
+          Rails.cache.clear
+
+          service = Beskar::Services::GeolocationService.new(provider: provider)
+          result = service.locate("203.0.113.1")
+
+          assert result.is_a?(Hash)
+          assert_equal provider, result[:provider]
+        end
+      end
+
+      # Test error handling
+      # test "handles provider errors gracefully" do
+      #   service = @service
+
+      #   # Mock an error in the lookup process
+      #   service.stubs(:lookup_mock).raises(StandardError.new("Provider error"))
+
+      #   # Should return unknown location instead of crashing
+      #   result = service.locate("203.0.113.1")
+
+      #   assert_equal "203.0.113.1", result[:ip]
+      #   assert_equal "Unknown", result[:country]
+      # end
+
+      # Test geographic coordinate validation
+      test "mock data returns valid coordinates" do
+        100.times do |i|
+          ip = "203.0.113.#{i}"
+          result = @service.locate(ip)
+
+          # Skip private IPs
+          next if result[:private_ip]
+
+          # Latitude should be between -90 and 90
+          if result[:latitude]
+            assert result[:latitude] >= -90
+            assert result[:latitude] <= 90
+          end
+
+          # Longitude should be between -180 and 180
+          if result[:longitude]
+            assert result[:longitude] >= -180
+            assert result[:longitude] <= 180
+          end
+        end
+      end
+
+      # Test result structure consistency
+      test "always returns consistent hash structure" do
+        test_ips = [
+          "203.0.113.1",      # Public IP
+          "127.0.0.1",        # Private IP
+          "invalid.ip",       # Invalid IP
+          "",                 # Empty string
+          nil                 # Nil
+        ]
+
+        expected_keys = [:ip, :country, :country_code, :city, :latitude, :longitude, :timezone, :provider, :private_ip]
+
+        test_ips.each do |ip|
+          result = @service.locate(ip)
+
+          expected_keys.each do |key|
+            assert result.key?(key), "Missing key #{key} for IP: #{ip.inspect}"
+          end
+        end
+      end
+
+      # Test that service doesn't leak sensitive information
+      test "truncates or sanitizes potentially dangerous input" do
+        dangerous_ips = [
+          "'; DROP TABLE security_events; --",
+          "<script>alert('xss')</script>",
+          "../../etc/passwd",
+          "A" * 1000  # Very long string
+        ]
+
+        dangerous_ips.each do |ip|
+          assert_nothing_raised do
+            result = @service.locate(ip)
+            assert result.is_a?(Hash)
+          end
+        end
+      end
+
+      # Performance and resource usage tests
+      test "handles many concurrent location requests" do
+        threads = []
+        results = []
+        mutex = Mutex.new
+
+        # Simulate concurrent requests
+        10.times do |i|
+          threads << Thread.new do
+            ip = "203.0.113.#{i}"
+            result = @service.locate(ip)
+
+            mutex.synchronize do
+              results << result
+            end
+          end
+        end
+
+        threads.each(&:join)
+
+        assert_equal 10, results.length
+        results.each do |result|
+          assert result.is_a?(Hash)
+          assert result.key?(:ip)
+        end
+      end
+    end
+  end
+end

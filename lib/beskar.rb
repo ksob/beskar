@@ -2,6 +2,10 @@ require "beskar/version"
 require "beskar/configuration"
 require "beskar/middleware"
 require "beskar/middleware/request_analyzer"
+require "beskar/models/security_trackable"
+require "beskar/services/rate_limiter"
+require "beskar/services/device_detector"
+require "beskar/services/geolocation_service"
 require "beskar/engine"
 
 module Beskar
@@ -12,5 +16,15 @@ module Beskar
   def self.configure
     self.configuration ||= Configuration.new
     yield(configuration)
+  end
+
+  # Convenience method to access the rate limiter
+  def self.rate_limiter
+    Services::RateLimiter
+  end
+
+  # Check if a request should be rate limited
+  def self.rate_limited?(request, user = nil)
+    Services::RateLimiter.is_rate_limited?(request, user)
   end
 end

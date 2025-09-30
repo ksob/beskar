@@ -10,10 +10,10 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_09_27_120900) do
+ActiveRecord::Schema[8.0].define(version: 2025_09_29_092712) do
   create_table "beskar_security_events", force: :cascade do |t|
-    t.string "user_type", null: false
-    t.integer "user_id", null: false
+    t.string "user_type"
+    t.integer "user_id"
     t.string "event_type"
     t.string "ip_address"
     t.text "user_agent"
@@ -21,7 +21,15 @@ ActiveRecord::Schema[8.0].define(version: 2025_09_27_120900) do
     t.integer "risk_score"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "attempted_email"
+    t.index ["attempted_email"], name: "index_beskar_security_events_on_attempted_email"
+    t.index ["created_at"], name: "index_beskar_security_events_on_created_at"
+    t.index ["event_type"], name: "index_beskar_security_events_on_event_type"
+    t.index ["ip_address", "event_type", "created_at"], name: "index_security_events_on_ip_event_time"
+    t.index ["ip_address"], name: "index_beskar_security_events_on_ip_address"
+    t.index ["risk_score"], name: "index_beskar_security_events_on_risk_score"
     t.index ["user_type", "user_id"], name: "index_beskar_security_events_on_user"
+    t.index ["user_type", "user_id"], name: "index_beskar_security_events_on_user_type_and_user_id"
   end
 
   create_table "users", force: :cascade do |t|

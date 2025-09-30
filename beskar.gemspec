@@ -25,5 +25,9 @@ Built as a mountable Rails Engine, it leverages core framework features like Act
   end
 
   spec.add_dependency "rails", ">= 8.0.0"
+  spec.add_development_dependency "debug"
   spec.add_development_dependency "devise"
+  spec.add_development_dependency "ostruct"
+  spec.add_development_dependency "factory_bot_rails"
+  spec.add_development_dependency "mocha"
 end

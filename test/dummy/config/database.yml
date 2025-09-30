@@ -7,7 +7,13 @@
 default: &default
   adapter: sqlite3
   max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
-  timeout: 5000
+  timeout: 30000
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  pragma:
+    journal_mode: WAL
+    synchronous: NORMAL
+    cache_size: 10000
+    foreign_keys: true
 
 development:
   <<: *default
@@ -19,7 +25,15 @@ development:
 test:
   <<: *default
   database: storage/test.sqlite3
-
+  pool: 20
+  timeout: 60000
+  pragma:
+    journal_mode: WAL
+    synchronous: OFF
+    cache_size: 50000
+    foreign_keys: true
+    temp_store: MEMORY
+    mmap_size: 67108864
 
 # SQLite3 write its data on the local filesystem, as such it requires
 # persistent disks. If you are deploying to a managed service, you should
