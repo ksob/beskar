@@ -117,6 +117,12 @@ module Beskar
 
           # Update rate limiting
           Beskar::Services::RateLimiter.check_authentication_attempt(request, result, self)
+
+          # Check risk-based locking after successful authentication
+          # This prevents compromised accounts from being used even after successful login
+          if result == :success
+            check_and_lock_if_high_risk(security_event, request)
+          end
         end
 
         security_event
@@ -159,6 +165,24 @@ module Beskar
         return true if geographic_anomaly_detected?(recent_logins)
 
         false
+      end
+
+      # PUBLIC method called from Warden callback in engine.rb
+      # Checks if account was just locked due to high risk and signs out if needed
+      def check_high_risk_lock_and_signout(auth)
+        return unless Beskar.configuration.risk_based_locking_enabled?
+        
+        # Check if there's a very recent lock event (within last 5 seconds)
+        recent_lock = security_events
+          .where(event_type: ['account_locked', 'lock_attempted'])
+          .where('created_at >= ?', 5.seconds.ago)
+          .exists?
+        
+        if recent_lock
+          Rails.logger.warn "[Beskar] High-risk lock detected, signing out user #{id}"
+          auth.logout
+          throw :warden, message: :account_locked_due_to_high_risk
+        end
       end
 
       private
@@ -211,17 +235,28 @@ module Beskar
         # Account-specific risk factors
         score += 20 if recent_failed_attempts(within: 10.minutes).count >= 2
 
+        # ADAPTIVE LEARNING: Check if this is an established pattern
+        # If user has successfully logged in from this context before (especially after unlock),
+        # reduce the risk score significantly
+        if result == :success && established_pattern?(request)
+          Rails.logger.info "[Beskar] Established pattern detected, reducing risk score"
+          score = [score * 0.3, 25].min.to_i # Reduce to 30% of original, cap at 25
+        end
+
         # Geographic risk assessment
         geolocation_service = Beskar::Services::GeolocationService.new
         recent_locations = recent_successful_logins(within: 4.hours).map do |event|
           event.metadata&.dig('geolocation')
         end.compact
 
-        score += geolocation_service.calculate_location_risk(
-          request.ip,
-          recent_locations,
-          recent_successful_logins(within: 4.hours).last&.created_at&.to_i
-        )
+        # Don't apply geographic risk if this location is established
+        unless location_established?(request.ip)
+          score += geolocation_service.calculate_location_risk(
+            request.ip,
+            recent_locations,
+            recent_successful_logins(within: 4.hours).last&.created_at&.to_i
+          )
+        end
 
         [score, 100].min # Cap at 100
       end
@@ -230,6 +265,130 @@ module Beskar
         # Placeholder for geographic anomaly detection
         # Would implement haversine formula and impossible travel detection
         false
+      end
+
+      # Check if the account should be locked based on risk score
+      # This is called after successful authentication to prevent use of compromised accounts
+      def check_and_lock_if_high_risk(security_event, request)
+        return unless Beskar.configuration.risk_based_locking_enabled?
+        return unless security_event.risk_score
+
+        locker = Beskar::Services::AccountLocker.new(
+          self,
+          risk_score: security_event.risk_score,
+          reason: determine_lock_reason(security_event),
+          metadata: {
+            ip_address: request.ip,
+            user_agent: request.user_agent,
+            security_event_id: security_event.id,
+            geolocation: security_event.geolocation,
+            device_info: security_event.device_info
+          }
+        )
+
+        if locker.lock_if_necessary!
+          Rails.logger.warn "[Beskar] Account locked due to high risk score: #{security_event.risk_score} (threshold: #{Beskar.configuration.risk_threshold})"
+          
+          # Sign out the user immediately if using Warden/Devise
+          sign_out_after_lock if defined?(Warden)
+        end
+      end
+
+      # Determine the specific reason for locking
+      def determine_lock_reason(security_event)
+        metadata = security_event.metadata || {}
+        
+        # Check for impossible travel
+        if metadata.dig('geolocation', 'impossible_travel')
+          return :impossible_travel
+        end
+
+        # Check for suspicious device
+        device_info = metadata['device_info'] || {}
+        if device_info['bot_signature'] || device_info['suspicious']
+          return :suspicious_device
+        end
+
+        # Check for geographic anomaly
+        geolocation = metadata['geolocation'] || {}
+        if geolocation['country_change'] || geolocation['high_risk_country']
+          return :geographic_anomaly
+        end
+
+        # Default to high risk authentication
+        :high_risk_authentication
+      end
+
+      # Sign out user after lock (for immediate protection)
+      # This method doesn't actually sign out - that's handled by Warden callback in engine.rb
+      # It just flags that a lock occurred by creating the lock event
+      # The Warden callback detects the recent lock event and performs the actual sign-out
+      def sign_out_after_lock
+        Rails.logger.debug "[Beskar] Account locked - Warden callback will handle sign-out"
+      end
+
+      # ADAPTIVE LEARNING: Check if this login pattern is established
+      # A pattern is "established" if the user has successfully logged in
+      # from similar context multiple times, especially after being unlocked
+      def established_pattern?(request)
+        return false unless security_events.any?
+
+        current_ip = request.ip
+        # Future enhancement: could also match on user_agent for stricter pattern matching
+
+        # Look for successful logins from this IP
+        # in the past 30 days (configurable timeframe for learning)
+        historical_logins = security_events
+          .where(event_type: 'login_success')
+          .where(ip_address: current_ip)
+          .where('created_at >= ?', 30.days.ago)
+          .where('created_at < ?', 5.minutes.ago) # Exclude current login
+
+        # Need at least 2 successful logins from this context
+        return false if historical_logins.count < 2
+
+        # Check if there was an unlock event followed by successful logins
+        # from this same context - this indicates user legitimized this pattern
+        recent_unlock_or_lock = security_events
+          .where(event_type: ['account_locked', 'account_unlocked', 'lock_attempted'])
+          .where('created_at >= ?', 7.days.ago)
+          .order(created_at: :desc)
+          .first
+
+        if recent_unlock_or_lock
+          # Check for successful logins after unlock/lock from same IP
+          logins_after_unlock = security_events
+            .where(event_type: 'login_success')
+            .where(ip_address: current_ip)
+            .where('created_at > ?', recent_unlock_or_lock.created_at)
+            .count
+
+          # If user unlocked and successfully logged in from same IP/context,
+          # that's a strong signal this is legitimate
+          return true if logins_after_unlock >= 1
+        end
+
+        # Pattern is established if there are 3+ successful logins
+        # from this context over time
+        historical_logins.count >= 3
+      end
+
+      # Check if a location (IP) is established/trusted
+      # A location is established if user has successfully logged in from it
+      # multiple times over a period of time
+      def location_established?(ip_address)
+        return false unless security_events.any?
+
+        successful_logins_from_ip = security_events
+          .where(event_type: 'login_success')
+          .where(ip_address: ip_address)
+          .where('created_at >= ?', 30.days.ago)
+          .where('created_at < ?', 5.minutes.ago) # Exclude current login
+          .count
+
+        # Location is established if there are 2+ successful logins
+        # This is more lenient than full pattern matching
+        successful_logins_from_ip >= 2
       end
     end
   end

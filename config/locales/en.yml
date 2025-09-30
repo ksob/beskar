@@ -1,0 +1,10 @@
+en:
+  devise:
+    failure:
+      account_locked_due_to_high_risk: "Your account has been locked due to suspicious activity. Please contact support or wait for automatic unlock."
+  
+  beskar:
+    account_locking:
+      high_risk_detected: "High risk activity detected on your account"
+      locked_for_security: "Account locked for security reasons"
+      contact_support: "Please contact support to unlock your account"

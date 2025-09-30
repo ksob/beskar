@@ -6,6 +6,7 @@ require "beskar/models/security_trackable"
 require "beskar/services/rate_limiter"
 require "beskar/services/device_detector"
 require "beskar/services/geolocation_service"
+require "beskar/services/account_locker"
 require "beskar/engine"
 
 module Beskar

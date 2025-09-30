@@ -8,11 +8,35 @@ module Beskar
 
     initializer "beskar.warden_callbacks", after: :load_config_initializers do |app|
       if defined?(Warden)
+        # Track successful authentication and check for high-risk locks
         Warden::Manager.after_set_user except: :fetch do |user, auth, opts|
+          # Only proceed if Beskar security tracking is available and enabled
           if user.respond_to?(:track_authentication_event) && auth.request
-            user.track_authentication_event(auth.request, :success)
+            # Track the authentication event (creates security event)
+            security_event = user.track_authentication_event(auth.request, :success)
+            
+            # Check if account was locked due to high risk (only if immediate_signout is enabled)
+            # This happens AFTER successful authentication but BEFORE the request completes
+            # Requires :lockable module to be enabled on the user model
+            if Beskar.configuration.immediate_signout? && 
+               Beskar.configuration.risk_based_locking_enabled? && 
+               security_event && 
+               user_was_just_locked?(user, security_event) &&
+               user.respond_to?(:access_locked?) && user.access_locked?
+              Rails.logger.warn "[Beskar] Signing out user #{user.id} due to high-risk lock"
+              auth.logout
+              throw :warden, scope: opts[:scope], message: :account_locked_due_to_high_risk
+            end
           end
         end
+        
+        # Alternative approach using after_authentication is available but not enabled by default
+        # Uncomment this to use the alternative approach (more targeted, only on authentication)
+        # Warden::Manager.after_authentication do |user, auth, opts|
+        #   if user.respond_to?(:check_high_risk_lock_and_signout)
+        #     user.check_high_risk_lock_and_signout(auth)
+        #   end
+        # end
 
         Warden::Manager.before_failure do |env, opts|
           if env && defined?(User)
@@ -21,6 +45,22 @@ module Beskar
           end
         end
       end
+    end
+    
+    # Helper method to check if user was just locked
+    def self.user_was_just_locked?(user, security_event)
+      return false unless Beskar.configuration.risk_based_locking_enabled?
+      return false unless security_event
+      return false unless user&.respond_to?(:security_events)
+      
+      # Check if an account_locked or lock_attempted event was just created
+      recent_lock = user.security_events
+        .where(event_type: ['account_locked', 'lock_attempted'])
+        .where('created_at >= ?', 10.seconds.ago)
+        .order(created_at: :desc)
+        .first
+      
+      recent_lock.present?
     end
 
     # Add engine migrations to host app's migration paths

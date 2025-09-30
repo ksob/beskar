@@ -5,11 +5,14 @@
 ## Features
 
 -   **Devise Integration:** Seamless integration with Devise authentication for automatic login tracking and security analysis.
+-   **Risk-Based Account Locking:** Automatically locks accounts when authentication risk scores exceed configurable thresholds, preventing compromised account access.
 -   **Smart Rate Limiting:** Distributed rate limiting using Rails.cache with IP-based and account-based throttling with exponential backoff.
 -   **Brute Force Detection:** Advanced pattern recognition to detect single account attacks vs credential stuffing attempts.
 -   **Security Event Tracking:** Comprehensive logging of authentication events with risk scoring and metadata extraction.
+-   **Geographic Anomaly Detection:** Haversine-based impossible travel detection and location-based risk assessment.
 -   **Web Application Firewall (WAF):** Real-time protection against common attack vectors like SQL Injection (SQLi) and Cross-Site Scripting (XSS).
 -   **Advanced Bot Detection:** Multi-layered defense using JavaScript challenges and invisible honeypots to filter out malicious bots while allowing legitimate ones.
+-   **Modular Architecture:** Devise-specific code is isolated in separate services for maintainability and extensibility.
 -   **Rails-Native Architecture:** Built as a mountable `Rails::Engine`, it leverages `ActiveJob` and `Rails.cache` for high performance and low overhead.
 -   **Real-Time Dashboard (Coming Soon):** A mountable dashboard to visualize security events and monitor threats as they happen.
 
@@ -78,8 +81,16 @@ Beskar.configure do |config|
   # Enable or disable the WAF middleware. Defaults to false.
   config.enable_waf = true
 
-  # === Account Protection ===
-  # Additional security features will be configured here
+  # === Risk-Based Account Locking ===
+  # Automatically lock accounts when authentication risk score exceeds threshold
+  config.risk_based_locking = {
+    enabled: false,                    # Master switch for risk-based locking
+    risk_threshold: 75,                # Lock account if risk score >= this value (0-100)
+    lock_strategy: :devise_lockable,   # Strategy: :devise_lockable, :custom, :none
+    auto_unlock_time: 1.hour,          # Time until automatic unlock (if supported)
+    notify_user: true,                 # Send notification on lock (future feature)
+    log_lock_events: true              # Create security event for locks
+  }
 end
 
 # Security Tracking Configuration Details
@@ -107,6 +118,108 @@ class User < ApplicationRecord
   # Add Beskar security tracking
   include Beskar::Models::SecurityTrackable
 end
+```
+
+### Risk-Based Account Locking (with Devise Lockable)
+
+Beskar can automatically lock user accounts when the calculated risk score exceeds a configured threshold. This prevents compromised accounts from being accessed even after successful authentication.
+
+**Setup with Devise Lockable:**
+
+1. Enable the `:lockable` module in your User model:
+
+```ruby
+class User < ApplicationRecord
+  devise :database_authenticatable, :registerable,
+         :recoverable, :rememberable, :validatable,
+         :lockable  # Add this for risk-based locking
+  
+  include Beskar::Models::SecurityTrackable
+end
+```
+
+2. Generate and run the migration to add lockable columns:
+
+```bash
+rails generate devise User  # This will add lockable columns if not present
+# Or manually add:
+# - failed_attempts (integer)
+# - unlock_token (string)
+# - locked_at (datetime)
+rails db:migrate
+```
+
+3. Enable risk-based locking in your initializer:
+
+```ruby
+# config/initializers/beskar.rb
+Beskar.configure do |config|
+  config.risk_based_locking = {
+    enabled: true,                     # Enable the feature
+    risk_threshold: 75,                # Lock when risk >= 75
+    lock_strategy: :devise_lockable,   # Use Devise's lockable module
+    auto_unlock_time: 1.hour,          # Automatic unlock after 1 hour
+    notify_user: true,                 # Log notification intent
+    log_lock_events: true              # Create security events
+  }
+end
+```
+
+**How it works:**
+
+- After each successful authentication, Beskar calculates a risk score (0-100) based on:
+  - Geographic anomalies (impossible travel, country changes)
+  - Device fingerprints (suspicious user agents, bot signatures)
+  - Login patterns (velocity, time of day, recent failures)
+  - IP reputation and geolocation risk
+
+- **Adaptive Learning:** The system learns from user behavior:
+  - After 2+ successful logins from an IP, that location becomes "established"
+  - If a user unlocks and logs in successfully, that pattern is trusted
+  - Risk scores are reduced to 30% for established patterns (capped at 25)
+  - This prevents repeated locks after users validate their login context
+
+- If the risk score meets or exceeds the configured threshold, the account is automatically locked
+- The user session is terminated immediately to prevent access
+- A security event is logged with the lock reason and risk details (always logged for audit trail)
+- The account remains locked until manually unlocked or the auto-unlock time expires (if supported)
+
+**Example Adaptive Flow:**
+1. User travels to new location → High risk (85) → Account locked
+2. User unlocks account → Validates legitimacy
+3. User logs in from same location → Pattern established → Risk reduced to 25 → Login succeeds ✅
+4. Future logins from this location → Normal risk → No more locks
+
+See `ADAPTIVE_LEARNING.md` for detailed documentation.
+
+**Lock Reasons:**
+
+The system identifies specific reasons for locking:
+- `:impossible_travel` - Login from location requiring impossible travel speed
+- `:suspicious_device` - Bot signature or suspicious user agent detected
+- `:geographic_anomaly` - Country change or high-risk location
+- `:high_risk_authentication` - General high-risk authentication pattern
+
+**Manual Lock/Unlock Operations:**
+
+```ruby
+# Manually lock an account based on risk
+locker = Beskar::Services::AccountLocker.new(
+  user,
+  risk_score: 85,
+  reason: :suspicious_device,
+  metadata: { ip_address: request.ip }
+)
+
+if locker.should_lock?
+  locker.lock!  # Lock the account
+end
+
+# Check if account is locked
+locker.locked?  # => true/false
+
+# Manually unlock
+locker.unlock!
 ```
 
 ### Security Event Tracking
