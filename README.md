@@ -9,6 +9,7 @@
 -   **Smart Rate Limiting:** Distributed rate limiting using Rails.cache with IP-based and account-based throttling with exponential backoff.
 -   **Brute Force Detection:** Advanced pattern recognition to detect single account attacks vs credential stuffing attempts.
 -   **Security Event Tracking:** Comprehensive logging of authentication events with risk scoring and metadata extraction.
+-   **IP Geolocation:** MaxMind GeoLite2-City database integration for country/city location, coordinates, timezone, and enhanced risk scoring (configurable, database not included due to licensing).
 -   **Geographic Anomaly Detection:** Haversine-based impossible travel detection and location-based risk assessment.
 -   **Web Application Firewall (WAF):** Real-time protection against common attack vectors like SQL Injection (SQLi) and Cross-Site Scripting (XSS).
 -   **Advanced Bot Detection:** Multi-layered defense using JavaScript challenges and invisible honeypots to filter out malicious bots while allowing legitimate ones.
@@ -90,6 +91,16 @@ Beskar.configure do |config|
     auto_unlock_time: 1.hour,          # Time until automatic unlock (if supported)
     notify_user: true,                 # Send notification on lock (future feature)
     log_lock_events: true              # Create security event for locks
+  }
+
+  # === IP Geolocation ===
+  # Configure IP geolocation for enhanced risk assessment
+  # Note: You must provide your own MaxMind GeoLite2-City database due to licensing
+  # Download from: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+  config.geolocation = {
+    provider: :maxmind,                # Provider: :maxmind or :mock (for testing)
+    maxmind_city_db_path: Rails.root.join('db', 'geoip', 'GeoLite2-City.mmdb').to_s,
+    cache_ttl: 4.hours                 # How long to cache geolocation results
   }
 end
 

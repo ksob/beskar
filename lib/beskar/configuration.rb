@@ -1,6 +1,6 @@
 module Beskar
   class Configuration
-    attr_accessor :enable_waf, :waf_ruleset, :rate_limiting, :security_tracking, :risk_based_locking
+    attr_accessor :enable_waf, :waf_ruleset, :rate_limiting, :security_tracking, :risk_based_locking, :geolocation
 
     def initialize
       @enable_waf = false # Default to off
@@ -36,6 +36,11 @@ module Beskar
         notify_user: true,                 # Send notification on lock
         log_lock_events: true,             # Create security event for locks
         immediate_signout: false           # Sign out user immediately via Warden callback (requires :lockable)
+      }
+      @geolocation = {
+        provider: :mock,                   # Provider: :maxmind, :mock
+        maxmind_city_db_path: nil,         # Path to MaxMind GeoLite2-City.mmdb or GeoIP2-City.mmdb
+        cache_ttl: 4.hours                 # How long to cache geolocation results
       }
     end
 
@@ -82,6 +87,19 @@ module Beskar
 
     def immediate_signout?
       @risk_based_locking[:immediate_signout] == true
+    end
+
+    # Geolocation configuration helpers
+    def geolocation_provider
+      @geolocation[:provider] || :mock
+    end
+
+    def maxmind_city_db_path
+      @geolocation[:maxmind_city_db_path]
+    end
+
+    def geolocation_cache_ttl
+      @geolocation[:cache_ttl] || 4.hours
     end
   end
 end

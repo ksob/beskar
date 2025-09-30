@@ -7,10 +7,10 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
   def setup
     # Clear cache and reset configuration
 
-
-    # Create test user
-    @user = create(:user, email: "test@example.com", password: "password123")
-    @invalid_email = "nonexistent@example.com"
+    # Create test user with unique email per test to avoid parallel test interference
+    test_id = "#{self.class.name}_#{@NAME}".gsub(/[^a-z0-9]/i, "_")
+    @user = create(:user, email: "test_#{test_id}@example.com", password: "password123")
+    @invalid_email = "nonexistent_#{test_id}@example.com"
     @invalid_password = "wrongpassword"
 
     # Disable CSRF protection for integration tests
@@ -55,71 +55,86 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
   end
 
   test "failed login creates security event via HTTP request" do
-    assert_difference "Beskar::SecurityEvent.count", 1 do
-      post "/users/sign_in", params: {
-        user: {
-          email: @invalid_email,
-          password: @invalid_password
-        }
-      }, headers: {
-        "User-Agent" => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-        "X-Forwarded-For" => "10.0.0.1"
+    ip_address = worker_ip(1)
+    user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+    initial_count = Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).count
+
+    post "/users/sign_in", params: {
+      user: {
+        email: @invalid_email,
+        password: @invalid_password
       }
-    end
+    }, headers: {
+      "User-Agent" => user_agent,
+      "X-Forwarded-For" => ip_address
+    }
 
     # Devise returns 422 for failed login attempts
     assert_response :unprocessable_content
 
-    event = Beskar::SecurityEvent.last
+    # Verify exactly one event was created for this IP + user agent
+    assert_equal initial_count + 1, Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).count
+
+    event = Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).last
     assert_equal "login_failure", event.event_type
     assert_nil event.user_id # No user for failed attempt
-    assert_equal "10.0.0.1", event.ip_address
+    assert_equal ip_address, event.ip_address
     assert_equal @invalid_email, event.attempted_email
     assert_includes event.user_agent, "Macintosh"
     assert event.risk_score >= 10 # Failed attempts should have higher risk
   end
 
   test "failed login with existing user email creates security event" do
-    assert_difference "Beskar::SecurityEvent.count", 1 do
-      post "/users/sign_in", params: {
-        user: {
-          email: @user.email, # Valid email but wrong password
-          password: @invalid_password
-        }
-      }, headers: {
-        "User-Agent" => "Mozilla/5.0 (X11; Linux x86_64)",
-        "X-Forwarded-For" => "203.0.113.1"
+    ip_address = worker_ip(1)
+    user_agent = "Mozilla/5.0 (X11; Linux x86_64)"
+    initial_count = Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).count
+
+    post "/users/sign_in", params: {
+      user: {
+        email: @user.email, # Valid email but wrong password
+        password: @invalid_password
       }
-    end
+    }, headers: {
+      "User-Agent" => user_agent,
+      "X-Forwarded-For" => ip_address
+    }
+
+    # Verify exactly one event was created for this IP + user agent
+    assert_equal initial_count + 1, Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).count
 
     event = Beskar::SecurityEvent.last
     assert_equal "login_failure", event.event_type
     assert_nil event.user_id # Still no user association for failed attempt
     assert_equal @user.email, event.attempted_email
-    assert_equal "203.0.113.1", event.ip_address
+    assert_equal ip_address, event.ip_address
   end
 
   test "suspicious login attempt with bot user agent has higher risk score" do
-    assert_difference "Beskar::SecurityEvent.count", 1 do
-      post "/users/sign_in", params: {
-        user: {
-          email: @user.email,
-          password: "password123"
-        }
-      }, headers: {
-        "User-Agent" => "curl/7.68.0", # Suspicious bot-like user agent
-        "X-Forwarded-For" => "198.51.100.1"
-      }
-    end
+    ip_address = worker_ip(1) # Use unique IP per test
+    user_agent = "curl/7.68.0"
 
-    event = Beskar::SecurityEvent.last
+    post "/users/sign_in", params: {
+      user: {
+        email: @user.email,
+        password: "password123"
+      }
+    }, headers: {
+      "User-Agent" => user_agent, # Suspicious bot-like user agent
+      "X-Forwarded-For" => ip_address
+    }
+
+    # Find the event(s) created for this login
+    events = Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent)
+    assert events.count > 0, "At least one security event should be created"
+
+    event = events.last
     # Bot user agent should increase risk score somewhat - adjust expectation based on actual scoring
-    assert event.risk_score >= 1, "Expected risk score >= 1 for bot user agent, got #{event.risk_score}"
-    assert_equal "198.51.100.1", event.ip_address
+    assert event.risk_score >= 45, "Expected risk score >= 1 for bot user agent, got #{event.risk_score}"
+    assert_equal ip_address, event.ip_address
   end
 
   test "multiple rapid failed login attempts create multiple security events" do
-    ip_address = "192.168.1.200"
+    ip_address = worker_ip(1)
 
     # Make several failed attempts
     5.times do |i|
@@ -177,23 +192,26 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
   test "device information is captured from different user agents" do
     # Test just one user agent to keep it simple and reliable
     user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15"
+    ip_address = worker_ip(1)
+    initial_count = Beskar::SecurityEvent.where(ip_address: ip_address).count
 
-    assert_difference "Beskar::SecurityEvent.count", 1 do
-      post "/users/sign_in", params: {
-        user: {
-          email: @user.email,
-          password: "wrongpassword"
-        }
-      }, headers: {
-        "User-Agent" => user_agent,
-        "X-Forwarded-For" => "192.168.1.150"
+    post "/users/sign_in", params: {
+      user: {
+        email: @user.email,
+        password: "wrongpassword"
       }
-    end
+    }, headers: {
+      "User-Agent" => user_agent,
+      "X-Forwarded-For" => ip_address
+    }
+
+    # Verify exactly one event was created for this IP
+    assert_equal initial_count + 1, Beskar::SecurityEvent.where(ip_address: ip_address).count
 
     # Find the security event for this attempt
-    event = Beskar::SecurityEvent.last
+    event = Beskar::SecurityEvent.where(ip_address: ip_address).last
     assert_not_nil event, "Security event should be created"
-    assert_equal "192.168.1.150", event.ip_address
+    assert_equal ip_address, event.ip_address
 
     device_info = event.device_info
     assert_not_nil device_info, "Device info should be present"
@@ -204,7 +222,7 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
   end
 
   test "concurrent login attempts from different IPs create separate security events" do
-    ip_addresses = ["192.168.1.10", "192.168.1.11", "192.168.1.12"]
+    ip_addresses = [ "192.168.1.10", "192.168.1.11", "192.168.1.12" ]
 
     # Simulate concurrent login attempts
     ip_addresses.each do |ip|
@@ -232,19 +250,24 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
   end
 
   test "login with empty user agent is tracked" do
-    assert_difference "Beskar::SecurityEvent.count", 1 do
-      post "/users/sign_in", params: {
-        user: {
-          email: @user.email,
-          password: "password123"
-        }
-      }, headers: {
-        "User-Agent" => "", # Empty user agent
-        "X-Forwarded-For" => "10.0.0.100"
-      }
-    end
+    ip_address = worker_ip(1)
+    user_agent = "" # Empty user agent
+    initial_count = Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).count
 
-    event = Beskar::SecurityEvent.last
+    post "/users/sign_in", params: {
+      user: {
+        email: @user.email,
+        password: "password123"
+      }
+    }, headers: {
+      "User-Agent" => user_agent,
+      "X-Forwarded-For" => ip_address
+    }
+
+    # Verify exactly one event was created for this IP + user agent
+    assert_equal initial_count + 1, Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).count
+
+    event = Beskar::SecurityEvent.where(ip_address: ip_address, user_agent: user_agent).last
     assert_equal "", event.user_agent
     assert event.risk_score >= 10, "Expected higher risk score for empty user agent"
   end
@@ -299,7 +322,7 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
     assert_not_nil event.metadata, "Event should have metadata"
     # Check request_path in metadata - could be /users/sign_in or /unauthenticated (failure redirect)
     if event.metadata["request_path"]
-      assert_includes ["/users/sign_in", "/unauthenticated"], event.metadata["request_path"]
+      assert_includes [ "/users/sign_in", "/unauthenticated" ], event.metadata["request_path"]
     end
     assert_equal referer_url, event.metadata["referer"]
     # Session ID might be in different formats or nil in test environment
@@ -310,7 +333,7 @@ class DeviseAuthenticationSecurityTest < ActionDispatch::IntegrationTest
 
   test "rate limiting respects different IP addresses" do
     # Create attempts from different IPs to test IP-based isolation
-    ips = ["192.168.1.301", "192.168.1.302", "192.168.1.303"]
+    ips = [ "192.168.1.301", "192.168.1.302", "192.168.1.303" ]
 
     ips.each_with_index do |ip, index|
       # Make several attempts for this IP

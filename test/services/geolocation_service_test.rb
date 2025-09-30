@@ -165,31 +165,37 @@ module Beskar
       end
 
       test "calculate_location_risk detects impossible travel" do
+        # Use mock provider for consistent test data
+        service = Beskar::Services::GeolocationService.new(provider: :mock)
+        
         # Mock two distant locations
         ny_ip = "203.0.113.1"  # Will map to consistent mock location
         london_ip = "203.0.113.2"  # Will map to different mock location
 
         # Get the mock locations
-        ny_location = @service.locate(ny_ip)
-        @service.locate(london_ip)
+        ny_location = service.locate(ny_ip)
+        service.locate(london_ip)
 
         # Calculate risk with short time difference (impossible travel)
-        risk = @service.calculate_location_risk(london_ip, [ny_location], 3600)
+        risk = service.calculate_location_risk(london_ip, [ny_location], 3600)
 
         # Should detect impossible travel and add significant risk
         assert risk >= 25
       end
 
       test "calculate_location_risk handles country changes" do
+        # Use mock provider for consistent test data
+        service = Beskar::Services::GeolocationService.new(provider: :mock)
+        
         ip1 = "203.0.113.1"
         ip2 = "203.0.113.2"
 
-        location1 = @service.locate(ip1)
-        location2 = @service.locate(ip2)
+        location1 = service.locate(ip1)
+        location2 = service.locate(ip2)
 
         # If countries are different, should add some risk
         if location1[:country] != location2[:country]
-          risk = @service.calculate_location_risk(ip2, [location1])
+          risk = service.calculate_location_risk(ip2, [location1])
           assert risk >= 10
         end
       end
@@ -206,10 +212,13 @@ module Beskar
 
       # Test mock data consistency
       test "mock provider returns consistent data for same IP" do
+        # Use mock provider explicitly
+        service = Beskar::Services::GeolocationService.new(provider: :mock)
+        
         ip = "203.0.113.1"
 
-        result1 = @service.locate(ip)
-        result2 = @service.locate(ip)
+        result1 = service.locate(ip)
+        result2 = service.locate(ip)
 
         assert_equal result1[:country], result2[:country]
         assert_equal result1[:city], result2[:city]
@@ -218,11 +227,14 @@ module Beskar
       end
 
       test "mock provider returns different data for different IPs" do
+        # Use mock provider explicitly
+        service = Beskar::Services::GeolocationService.new(provider: :mock)
+        
         ip1 = "203.0.113.1"
         ip2 = "203.0.113.50"  # Should map to different mock data
 
-        result1 = @service.locate(ip1)
-        result2 = @service.locate(ip2)
+        result1 = service.locate(ip1)
+        result2 = service.locate(ip2)
 
         # At least country or city should be different
         different = result1[:country] != result2[:country] ||
@@ -295,9 +307,12 @@ module Beskar
 
       # Test geographic coordinate validation
       test "mock data returns valid coordinates" do
+        # Use mock provider explicitly
+        service = Beskar::Services::GeolocationService.new(provider: :mock)
+        
         100.times do |i|
           ip = "203.0.113.#{i}"
-          result = @service.locate(ip)
+          result = service.locate(ip)
 
           # Skip private IPs
           next if result[:private_ip]
@@ -379,6 +394,202 @@ module Beskar
           assert result.is_a?(Hash)
           assert result.key?(:ip)
         end
+      end
+
+      # MaxMind integration tests
+      test "maxmind service initializes with configured provider" do
+        # Save original configuration
+        original_provider = Beskar.configuration.geolocation_provider
+
+        # Configure MaxMind provider
+        Beskar.configuration.geolocation[:provider] = :maxmind
+
+        service = Beskar::Services::GeolocationService.new
+        result = service.locate("8.8.8.8")
+
+        assert_equal :maxmind, result[:provider]
+
+        # Restore original configuration
+        Beskar.configuration.geolocation[:provider] = original_provider
+      ensure
+        # Clean up
+        Beskar.configuration.geolocation[:provider] = original_provider
+      end
+
+      test "maxmind reader returns nil when database path not configured" do
+        # Save original configuration
+        original_city_path = Beskar.configuration.maxmind_city_db_path
+
+        # Clear database path
+        Beskar.configuration.geolocation[:maxmind_city_db_path] = nil
+
+        # Reset readers to force reinitialization
+        Beskar::Services::GeolocationService.reset_readers!
+
+        assert_nil Beskar::Services::GeolocationService.city_reader
+
+        # Restore original configuration
+        Beskar.configuration.geolocation[:maxmind_city_db_path] = original_city_path
+        Beskar::Services::GeolocationService.reset_readers!
+      end
+
+      test "maxmind reader handles non-existent database file gracefully" do
+        # Save original configuration
+        original_city_path = Beskar.configuration.maxmind_city_db_path
+
+        # Set non-existent database path
+        Beskar.configuration.geolocation[:maxmind_city_db_path] = "/non/existent/path.mmdb"
+
+        # Reset readers to force reinitialization
+        Beskar::Services::GeolocationService.reset_readers!
+
+        # Should return nil and log warning
+        assert_nil Beskar::Services::GeolocationService.city_reader
+
+        # Restore original configuration
+        Beskar.configuration.geolocation[:maxmind_city_db_path] = original_city_path
+        Beskar::Services::GeolocationService.reset_readers!
+      end
+
+      test "maxmind lookup includes city data when available" do
+        db_path = Rails.root.join('config', 'GeoLite2-City.mmdb').to_s
+        skip "City database not available" unless File.exist?(db_path)
+
+        # Reset readers to ensure fresh initialization
+        Beskar::Services::GeolocationService.reset_readers!
+
+        service = Beskar::Services::GeolocationService.new(provider: :maxmind)
+
+        # Use Google's public DNS IP
+        result = service.locate("8.8.8.8")
+
+        # Should have location data
+        assert result[:country].is_a?(String), "Country should be a string"
+        assert result[:country_code].is_a?(String), "Country code should be a string" if result[:country_code]
+        
+        # Coordinates may or may not be present depending on IP
+        if result[:latitude]
+          assert result[:latitude].is_a?(Numeric), "Latitude should be numeric"
+          assert result[:latitude] >= -90 && result[:latitude] <= 90
+        end
+      end
+
+      test "maxmind service handles public IPs correctly" do
+        db_path = Rails.root.join('config', 'GeoLite2-City.mmdb').to_s
+        skip "City database not available" unless File.exist?(db_path)
+
+        service = Beskar::Services::GeolocationService.new(provider: :maxmind)
+
+        # Test with well-known public IPs
+        public_ips = [
+          "8.8.8.8",      # Google DNS
+          "1.1.1.1",      # Cloudflare DNS
+          "208.67.222.222" # OpenDNS
+        ]
+
+        public_ips.each do |ip|
+          result = service.locate(ip)
+
+          assert_equal ip, result[:ip]
+          assert_equal :maxmind, result[:provider]
+          assert_equal false, result[:private_ip]
+
+          # Should have some location data or return Unknown
+          assert result.key?(:country)
+          assert result.key?(:country_code)
+          assert result.key?(:city)
+          assert result.key?(:latitude)
+          assert result.key?(:longitude)
+        end
+      end
+
+      test "maxmind reader is thread-safe" do
+        db_path = Rails.root.join('config', 'GeoLite2-City.mmdb').to_s
+        skip "City database not available" unless File.exist?(db_path)
+
+        # Reset readers
+        Beskar::Services::GeolocationService.reset_readers!
+
+        threads = []
+        results = []
+        mutex = Mutex.new
+
+        # Multiple threads trying to initialize and use reader simultaneously
+        20.times do |i|
+          threads << Thread.new do
+            service = Beskar::Services::GeolocationService.new(provider: :maxmind)
+            result = service.locate("8.8.#{i}.#{i}")
+
+            mutex.synchronize do
+              results << result
+            end
+          end
+        end
+
+        threads.each(&:join)
+
+        # All requests should complete successfully
+        assert_equal 20, results.length
+        results.each do |result|
+          assert result.is_a?(Hash)
+          assert_equal :maxmind, result[:provider]
+        end
+      end
+
+      test "maxmind service falls back gracefully when database unavailable" do
+        # Save original configuration
+        original_provider = Beskar.configuration.geolocation_provider
+        original_city_path = Beskar.configuration.maxmind_city_db_path
+
+        # Configure MaxMind but with invalid path
+        Beskar.configuration.geolocation[:provider] = :maxmind
+        Beskar.configuration.geolocation[:maxmind_city_db_path] = nil
+
+        # Reset readers
+        Beskar::Services::GeolocationService.reset_readers!
+
+        service = Beskar::Services::GeolocationService.new(provider: :maxmind)
+        result = service.locate("8.8.8.8")
+
+        # Should still return a valid result
+        assert result.is_a?(Hash)
+        assert_equal "8.8.8.8", result[:ip]
+        assert_equal :maxmind, result[:provider]
+        # Should return Unknown for unavailable data
+        assert_equal "Unknown", result[:country]
+
+        # Restore original configuration
+        Beskar.configuration.geolocation[:provider] = original_provider
+        Beskar.configuration.geolocation[:maxmind_city_db_path] = original_city_path
+        Beskar::Services::GeolocationService.reset_readers!
+      end
+
+      test "configuration respects custom cache TTL" do
+        # Save original configuration
+        original_ttl = Beskar.configuration.geolocation_cache_ttl
+
+        # Set custom TTL
+        custom_ttl = 2.hours
+        Beskar.configuration.geolocation[:cache_ttl] = custom_ttl
+
+        service = Beskar::Services::GeolocationService.new
+        assert_equal custom_ttl, service.instance_variable_get(:@cache_ttl)
+
+        # Restore original configuration
+        Beskar.configuration.geolocation[:cache_ttl] = original_ttl
+      end
+
+      test "reset_readers! clears cached reader instance" do
+        # Initialize reader if database is available
+        Beskar::Services::GeolocationService.city_reader
+
+        # Reset
+        Beskar::Services::GeolocationService.reset_readers!
+
+        # Reader should be nil (will be reinitialized on next access)
+        city_reader = Beskar::Services::GeolocationService.instance_variable_get(:@city_reader)
+
+        assert_nil city_reader
       end
     end
   end

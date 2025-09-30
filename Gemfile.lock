@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     beskar (0.0.1)
+      maxminddb (~> 0.1)
       rails (>= 8.0.0)
 
 GEM
@@ -127,6 +128,7 @@ GEM
       net-pop
       net-smtp
     marcel (1.1.0)
+    maxminddb (0.1.22)
     mini_mime (1.1.5)
     minitest (5.25.5)
     mocha (2.7.1)

@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+begin
+  require 'maxminddb'
+rescue LoadError
+  # MaxMindDB gem not available
+end
+
 module Beskar
   module Services
     # Service for detecting geographic location from IP addresses
@@ -7,12 +13,18 @@ module Beskar
     # This service provides IP-based geolocation capabilities for security analysis,
     # impossible travel detection, and geographic anomaly detection.
     #
+    # Features:
+    # - Efficient MaxMind database reading with singleton pattern
+    # - Automatic caching with configurable TTL
+    # - Private IP detection
+    # - Impossible travel detection using Haversine formula
+    #
     # @example Basic usage
     #   service = Beskar::Services::GeolocationService.new
     #   location = service.locate("203.0.113.1")
     #   # => {
     #   #   ip: "203.0.113.1",
-    #   #   country: "US",
+    #   #   country: "United States",
     #   #   country_code: "US",
     #   #   city: "New York",
     #   #   latitude: 40.7128,
@@ -37,7 +49,12 @@ module Beskar
       # Cache TTL for geolocation results (4 hours)
       CACHE_TTL = 4.hours
 
+      # Thread-safe reader for MaxMind City database
+      @city_reader_mutex = Mutex.new
+      @city_reader = nil
+
       class << self
+        attr_reader :city_reader_mutex
         # Convenience method for one-off location lookup
         #
         # @param ip_address [String] The IP address to locate
@@ -90,12 +107,44 @@ module Beskar
         end
       end
 
+      # Get or initialize the MaxMind City database reader
+      # Uses thread-safe singleton pattern for efficient database access
+      #
+      # @return [MaxMindDB::Reader, nil] The reader instance or nil if not configured
+      def self.city_reader
+        return @city_reader if @city_reader
+        return nil unless Beskar.configuration.maxmind_city_db_path
+        return nil unless defined?(MaxMindDB)
+
+        @city_reader_mutex.synchronize do
+          return @city_reader if @city_reader
+
+          db_path = Beskar.configuration.maxmind_city_db_path
+          if File.exist?(db_path)
+            @city_reader = MaxMindDB.new(db_path)
+            Rails.logger.info "[Beskar::GeolocationService] MaxMind City database loaded from #{db_path}"
+          else
+            Rails.logger.warn "[Beskar::GeolocationService] MaxMind City database not found at #{db_path}"
+          end
+          @city_reader
+        end
+      rescue => e
+        Rails.logger.error "[Beskar::GeolocationService] Failed to load MaxMind City database: #{e.message}"
+        nil
+      end
+
+      # Reset the database reader (useful for testing or reloading configuration)
+      def self.reset_readers!
+        @city_reader_mutex.synchronize { @city_reader = nil }
+      end
+
       # Initialize the geolocation service
       #
-      # @param provider [Symbol] The geolocation provider to use (:maxmind, :ip2location, :mock)
-      def initialize(provider: :mock)
-        @provider = provider
+      # @param provider [Symbol] The geolocation provider to use (:maxmind, :mock)
+      def initialize(provider: nil)
+        @provider = provider || Beskar.configuration.geolocation_provider
         @cache_key_prefix = "beskar:geolocation"
+        @cache_ttl = Beskar.configuration.geolocation_cache_ttl
       end
 
       # Locate an IP address and return geographic information
@@ -115,14 +164,14 @@ module Beskar
         end
 
         # Perform lookup based on provider
-        result = case @provider
-                when :maxmind
-                  lookup_maxmind(ip_address)
-                when :ip2location
-                  lookup_ip2location(ip_address)
-                else
-                  lookup_mock(ip_address)
-                end
+        case @provider
+        when :maxmind
+          result = lookup_maxmind(ip_address)
+        when :ip2location
+          result = lookup_ip2location(ip_address)
+        else
+          result = lookup_mock(ip_address)
+        end
 
         # Cache the result
         cache_location(ip_address, result)
@@ -244,14 +293,14 @@ module Beskar
         {
           ip: ip_address,
           country: case country_codes[index]
-                  when 'US' then 'United States'
-                  when 'CA' then 'Canada'
-                  when 'GB' then 'United Kingdom'
-                  when 'DE' then 'Germany'
-                  when 'FR' then 'France'
-                  when 'JP' then 'Japan'
-                  when 'AU' then 'Australia'
-                  end,
+                   when 'US' then 'United States'
+                   when 'CA' then 'Canada'
+                   when 'GB' then 'United Kingdom'
+                   when 'DE' then 'Germany'
+                   when 'FR' then 'France'
+                   when 'JP' then 'Japan'
+                   when 'AU' then 'Australia'
+                   end,
           country_code: country_codes[index],
           city: cities[index],
           latitude: (40.0 + (index * 10)) % 90,
@@ -267,11 +316,41 @@ module Beskar
       # @param ip_address [String] The IP address
       # @return [Hash] Location information from MaxMind
       def lookup_maxmind(ip_address)
-        # This would integrate with MaxMind GeoIP2 in production
-        # For now, return unknown result
-        result = unknown_location(ip_address)
-        result[:provider] = @provider
+        result = { ip: ip_address, provider: @provider, private_ip: false }
+
+        # Lookup city/location data
+        if city_reader = self.class.city_reader
+          begin
+            city_data = city_reader.lookup(ip_address)
+            if city_data&.found?
+              city_hash = city_data.to_hash
+              result.merge!(
+                country: city_hash.dig("country", "names", "en") || "Unknown",
+                country_code: city_hash.dig("country", "iso_code"),
+                city: city_hash.dig("city", "names", "en") || "Unknown",
+                latitude: city_hash.dig("location", "latitude"),
+                longitude: city_hash.dig("location", "longitude"),
+                timezone: city_hash.dig("location", "time_zone"),
+                postal_code: city_hash.dig("postal", "code"),
+                subdivision: city_hash.dig("subdivisions", 0, "names", "en"),
+                subdivision_code: city_hash.dig("subdivisions", 0, "iso_code")
+              )
+            else
+              result.merge!(unknown_location(ip_address).except(:ip, :provider, :private_ip))
+            end
+          rescue => e
+            Rails.logger.warn "[Beskar::GeolocationService] MaxMind City lookup failed for #{ip_address}: #{e.message}"
+            result.merge!(unknown_location(ip_address).except(:ip, :provider, :private_ip))
+          end
+        else
+          # No city database configured, return basic unknown location
+          result.merge!(unknown_location(ip_address).except(:ip, :provider, :private_ip))
+        end
+
         result
+      rescue => e
+        Rails.logger.error "[Beskar::GeolocationService] MaxMind lookup failed for #{ip_address}: #{e.message}"
+        unknown_location(ip_address)
       end
 
       # Lookup using IP2Location database
@@ -304,7 +383,7 @@ module Beskar
       # @param result [Hash] The location result to cache
       def cache_location(ip_address, result)
         cache_key = "#{@cache_key_prefix}:#{ip_address}"
-        Rails.cache.write(cache_key, result, expires_in: CACHE_TTL)
+        Rails.cache.write(cache_key, result, expires_in: @cache_ttl)
       rescue => e
         Rails.logger.debug "[Beskar::GeolocationService] Cache write failed: #{e.message}"
       end
