@@ -7,6 +7,8 @@ require "beskar/services/rate_limiter"
 require "beskar/services/device_detector"
 require "beskar/services/geolocation_service"
 require "beskar/services/account_locker"
+require "beskar/services/ip_whitelist"
+require "beskar/services/waf"
 require "beskar/engine"
 
 module Beskar

@@ -10,7 +10,24 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_09_29_092712) do
+ActiveRecord::Schema[8.0].define(version: 2025_10_01_131000) do
+  create_table "beskar_banned_ips", force: :cascade do |t|
+    t.string "ip_address", null: false
+    t.string "reason", null: false
+    t.text "details"
+    t.datetime "banned_at", null: false
+    t.datetime "expires_at"
+    t.boolean "permanent", default: false, null: false
+    t.integer "violation_count", default: 1, null: false
+    t.text "metadata"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["banned_at"], name: "index_beskar_banned_ips_on_banned_at"
+    t.index ["expires_at"], name: "index_beskar_banned_ips_on_expires_at"
+    t.index ["ip_address", "expires_at"], name: "index_beskar_banned_ips_on_ip_address_and_expires_at"
+    t.index ["ip_address"], name: "index_beskar_banned_ips_on_ip_address", unique: true
+  end
+
   create_table "beskar_security_events", force: :cascade do |t|
     t.string "user_type"
     t.integer "user_id"

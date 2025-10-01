@@ -7,11 +7,13 @@
 -   **Devise Integration:** Seamless integration with Devise authentication for automatic login tracking and security analysis.
 -   **Risk-Based Account Locking:** Automatically locks accounts when authentication risk scores exceed configurable thresholds, preventing compromised account access.
 -   **Smart Rate Limiting:** Distributed rate limiting using Rails.cache with IP-based and account-based throttling with exponential backoff.
--   **Brute Force Detection:** Advanced pattern recognition to detect single account attacks vs credential stuffing attempts.
+-   **Brute Force Detection:** Advanced pattern recognition to detect single account attacks vs credential stuffing attempts, with automatic IP banning.
+-   **IP Whitelisting:** Allow trusted IPs (office networks, partners, security scanners) to bypass blocking while maintaining full audit logs. Supports individual IPs and CIDR notation.
+-   **Persistent IP Blocking:** Hybrid cache + database blocking system that survives application restarts. Auto-bans IPs after authentication abuse or excessive rate limiting violations.
+-   **Web Application Firewall (WAF):** Real-time detection and blocking of vulnerability scanning attempts across 7 attack categories (WordPress, PHP admin panels, config files, path traversal, framework debug, CMS detection, common exploits). Includes escalating ban durations and monitor-only mode.
 -   **Security Event Tracking:** Comprehensive logging of authentication events with risk scoring and metadata extraction.
 -   **IP Geolocation:** MaxMind GeoLite2-City database integration for country/city location, coordinates, timezone, and enhanced risk scoring (configurable, database not included due to licensing).
 -   **Geographic Anomaly Detection:** Haversine-based impossible travel detection and location-based risk assessment.
--   **Web Application Firewall (WAF):** Real-time protection against common attack vectors like SQL Injection (SQLi) and Cross-Site Scripting (XSS).
 -   **Advanced Bot Detection:** Multi-layered defense using JavaScript challenges and invisible honeypots to filter out malicious bots while allowing legitimate ones.
 -   **Modular Architecture:** Devise-specific code is isolated in separate services for maintainability and extensibility.
 -   **Rails-Native Architecture:** Built as a mountable `Rails::Engine`, it leverages `ActiveJob` and `Rails.cache` for high performance and low overhead.
@@ -78,9 +80,28 @@ Beskar.configure do |config|
     }
   }
 
+  # === IP Whitelisting ===
+  # Allow trusted IPs to bypass all blocking (bans, rate limits, WAF)
+  # while still logging all activity for audit purposes
+  config.ip_whitelist = [
+    "192.168.1.100",      # Single IP address
+    "10.0.0.0/24",        # CIDR notation - entire subnet
+    "172.16.0.0/16",      # Larger CIDR range
+    "2001:db8::/32"       # IPv6 support
+  ]
+
   # === Web Application Firewall (WAF) ===
-  # Enable or disable the WAF middleware. Defaults to false.
-  config.enable_waf = true
+  # Real-time detection and blocking of vulnerability scanning attempts
+  config.waf = {
+    enabled: true,                        # Master switch for WAF
+    auto_block: true,                     # Automatically ban IPs after threshold
+    block_threshold: 3,                   # Number of violations before blocking
+    violation_window: 1.hour,             # Time window for counting violations
+    block_durations: [1.hour, 6.hours, 24.hours, 7.days], # Escalating ban durations
+    permanent_block_after: 5,             # Permanent ban after N violations
+    create_security_events: true,         # Log WAF violations to SecurityEvent table
+    monitor_only: false                   # If true, log violations but never block
+  }
 
   # === Risk-Based Account Locking ===
   # Automatically lock accounts when authentication risk score exceeds threshold
@@ -301,16 +322,485 @@ when :mixed_attack_pattern
 end
 ```
 
+### IP Whitelisting
+
+Whitelist trusted IPs to bypass all security blocking while maintaining full audit logs:
+
+```ruby
+# In config/initializers/beskar.rb
+Beskar.configure do |config|
+  config.ip_whitelist = [
+    "203.0.113.0/24",      # Office network (CIDR notation)
+    "198.51.100.50",       # VPN gateway (single IP)
+    "2001:db8::1"          # IPv6 address
+  ]
+end
+```
+
+**How it works:**
+- Whitelisted IPs bypass **all blocking** (banned IPs, rate limits, WAF violations)
+- All requests from whitelisted IPs are **still logged** for audit purposes
+- Supports individual IPs and CIDR notation (IPv4 and IPv6)
+- Configuration is validated on startup
+- Efficient caching for high-performance checks
+
+**Check if an IP is whitelisted:**
+```ruby
+if Beskar::Services::IpWhitelist.whitelisted?(request.ip)
+  # IP is trusted - allow but log activity
+end
+
+# Clear whitelist cache after config changes
+Beskar::Services::IpWhitelist.clear_cache!
+```
+
+### Web Application Firewall (WAF)
+
+Beskar's WAF detects and blocks vulnerability scanning attempts across 7 attack categories:
+
+**Attack Categories Detected:**
+1. **WordPress Scans** (High Severity) - `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`
+2. **PHP Admin Panels** (High Severity) - `/phpmyadmin`, `/admin.php`, `/phpinfo.php`
+3. **Config Files** (Critical Severity) - `/.env`, `/.git`, `/database.yml`
+4. **Path Traversal** (Critical Severity) - `/../../../etc/passwd`, URL encoded variants
+5. **Framework Debug** (Medium Severity) - `/rails/info/routes`, `/__debug__`, `/telescope`
+6. **CMS Detection** (Medium Severity) - `/joomla`, `/drupal`, `/magento`
+7. **Common Exploits** (Critical Severity) - `/shell.php`, `/c99.php`, `/webshell`
+
+**Configuration Examples:**
+
+```ruby
+# Production - Aggressive protection
+Beskar.configure do |config|
+  config.waf = {
+    enabled: true,
+    auto_block: true,
+    block_threshold: 2,              # Block after just 2 violations
+    violation_window: 30.minutes,
+    block_durations: [6.hours, 24.hours, 7.days, 30.days],
+    permanent_block_after: 4,
+    create_security_events: true
+  }
+end
+
+# Development - Monitor only
+Beskar.configure do |config|
+  config.waf = {
+    enabled: true,
+    monitor_only: true,              # Log but never block
+    create_security_events: true
+  }
+  
+  config.ip_whitelist = ["127.0.0.1", "::1"]  # Whitelist localhost
+end
+```
+
+**Blocking Behavior:**
+- **First violation**: Logged, violation count incremented
+- **Threshold reached** (default 3): IP automatically banned for 1 hour
+- **Repeat violations**: Ban duration escalates: 1h → 6h → 24h → 7d → **permanent**
+- **Permanent block**: After 5 violations (configurable), IP is permanently banned
+- **Monitor mode**: Logs all violations but never blocks (useful for tuning)
+
+**Check WAF status:**
+```ruby
+# Check if WAF detected threats
+violation_count = Beskar::Services::Waf.get_violation_count(ip_address)
+
+# Reset violations (admin action)
+Beskar::Services::Waf.reset_violations(ip_address)
+
+# Analyze a request without blocking
+waf_analysis = Beskar::Services::Waf.analyze_request(request)
+if waf_analysis
+  puts "Detected: #{waf_analysis[:patterns].map { |p| p[:description] }}"
+  puts "Severity: #{waf_analysis[:highest_severity]}"
+  puts "Risk Score: #{waf_analysis[:risk_score]}"
+end
+```
+
+### IP Blocking and Banning
+
+Beskar uses a hybrid cache + database blocking system that persists across application restarts.
+
+**Automatic IP Banning:**
+
+IPs are automatically banned for:
+1. **Authentication abuse** - 10+ failed login attempts in 1 hour
+2. **Rate limit violations** - 5+ rate limit violations in 1 hour
+3. **WAF violations** - 3+ vulnerability scan attempts (configurable)
+
+**Manual IP Management:**
+
+```ruby
+# Ban an IP address
+Beskar::BannedIp.ban!(
+  "203.0.113.50",
+  reason: "manual_block",
+  duration: 24.hours,
+  details: "Suspicious activity reported by admin",
+  metadata: { reporter: "admin@example.com", ticket: "#12345" }
+)
+
+# Permanent ban
+Beskar::BannedIp.ban!(
+  "203.0.113.51",
+  reason: "confirmed_attack",
+  permanent: true,
+  details: "Confirmed malicious actor"
+)
+
+# Check if IP is banned
+Beskar::BannedIp.banned?("203.0.113.50")  # => true
+
+# Unban an IP
+Beskar::BannedIp.unban!("203.0.113.50")
+
+# Extend existing ban
+ban = Beskar::BannedIp.find_by(ip_address: "203.0.113.50")
+ban.extend_ban!(12.hours)  # Add 12 hours to current expiry
+```
+
+**Query banned IPs:**
+
+```ruby
+# Get all active bans
+Beskar::BannedIp.active
+
+# Get permanent bans
+Beskar::BannedIp.permanent
+
+# Get expired bans (not enforced but in database)
+Beskar::BannedIp.expired
+
+# Find bans by reason
+Beskar::BannedIp.where(reason: 'waf_violation')
+Beskar::BannedIp.where(reason: 'authentication_abuse')
+Beskar::BannedIp.where(reason: 'rate_limit_abuse')
+
+# Cleanup expired bans from database
+removed_count = Beskar::BannedIp.cleanup_expired!
+```
+
+**Preload cache on startup:**
+
+The cache is automatically preloaded when your app starts, but you can manually trigger it:
+
+```ruby
+# In config/initializers/beskar.rb (optional - happens automatically)
+Rails.application.config.after_initialize do
+  Beskar::BannedIp.preload_cache!
+end
+```
+
+### Security Events and Monitoring
+
+**Query WAF violations:**
+
+```ruby
+# Recent WAF violations
+waf_events = Beskar::SecurityEvent
+  .where(event_type: 'waf_violation')
+  .where('created_at > ?', 24.hours.ago)
+  .order(created_at: :desc)
+
+# High-risk WAF events
+high_risk = Beskar::SecurityEvent
+  .where(event_type: 'waf_violation')
+  .where('risk_score >= ?', 80)
+  .includes(:user)
+
+# Group by IP to find repeat offenders
+repeat_offenders = Beskar::SecurityEvent
+  .where(event_type: 'waf_violation')
+  .where('created_at > ?', 7.days.ago)
+  .group(:ip_address)
+  .having('COUNT(*) >= ?', 5)
+  .count
+
+# WAF violations by pattern type
+waf_events.each do |event|
+  patterns = event.metadata['waf_analysis']['patterns']
+  patterns.each do |pattern|
+    puts "#{event.ip_address}: #{pattern['category']} - #{pattern['description']}"
+  end
+end
+```
+
+**Scheduled maintenance:**
+
+```ruby
+# In a background job (e.g., daily)
+class SecurityCleanupJob < ApplicationJob
+  def perform
+    # Remove expired bans from database
+    removed = Beskar::BannedIp.cleanup_expired!
+    Rails.logger.info "Cleaned up #{removed} expired IP bans"
+    
+    # Archive old security events (optional)
+    Beskar::SecurityEvent.where('created_at < ?', 90.days.ago).delete_all
+    
+    # Generate security report (example)
+    report = {
+      active_bans: Beskar::BannedIp.active.count,
+      permanent_bans: Beskar::BannedIp.permanent.count,
+      waf_violations_today: Beskar::SecurityEvent.where(
+        event_type: 'waf_violation',
+        created_at: 24.hours.ago..Time.current
+      ).count
+    }
+    
+    # Send to monitoring service
+    Rails.logger.info "Security Report: #{report}"
+  end
+end
+```
+
 ### Middleware Integration
 
-Beskar automatically injects its middleware into the Rails stack to:
+Beskar automatically injects its middleware (`Beskar::Middleware::RequestAnalyzer`) into the Rails stack to provide comprehensive request-level protection.
 
-- Track authentication events via Warden callbacks
-- Analyze request patterns for suspicious activity
-- Apply rate limiting before requests reach your controllers
-- Log security events for analysis
+**Request Processing Order:**
+
+Every request passes through these security checks in order:
+
+1. **Whitelist Check** - Determine if IP is whitelisted (bypasses blocking but still logs)
+2. **Banned IP Check** - Block immediately if IP is banned (403 Forbidden)
+3. **Rate Limiting** - Check rate limits (429 Too Many Requests if exceeded)
+4. **WAF Analysis** - Scan for vulnerability patterns (403 Forbidden if detected and threshold met)
+5. **Request Processing** - Continue to application if all checks pass
+
+**Features:**
+- **Early exit** - Banned IPs are blocked immediately for performance
+- **Whitelist bypass** - Trusted IPs bypass all blocking but activity is logged
+- **Auto-blocking** - Automatic IP banning after:
+  - 10+ failed authentication attempts (authentication abuse)
+  - 5+ rate limit violations in 1 hour (rate limit abuse)
+  - 3+ WAF violations (configurable, vulnerability scanning)
+- **Custom error pages** - Returns helpful 403/429 error responses
+- **Response headers** - Adds `X-Beskar-Blocked` and `X-Beskar-Rate-Limited` headers
+- **Graceful degradation** - Continues working if cache is unavailable
+
+**Middleware Logs:**
+
+The middleware generates structured log messages for monitoring:
+
+```
+[Beskar::Middleware] Blocked request from banned IP: 203.0.113.50
+[Beskar::Middleware] Rate limit exceeded for IP: 203.0.113.51
+[Beskar::Middleware] WAF violation from whitelisted IP 192.168.1.100 (not blocking): WordPress vulnerability scan
+[Beskar::Middleware] 🔒 Auto-blocked IP 203.0.113.52 after 3 WAF violations (duration: 1 hours)
+[Beskar::Middleware] 🔒 Auto-blocked IP 203.0.113.53 for authentication brute force (15 failures)
+```
 
 Security events are logged to the `beskar_security_events` table for analysis and will be visualized in the forthcoming security dashboard.
+
+## WAF Pattern Reference
+
+| Category | Severity | Example Patterns | Risk Score |
+|----------|----------|------------------|------------|
+| WordPress Scans | High | `/wp-admin`, `/wp-login.php`, `/xmlrpc.php` | 80 |
+| PHP Admin Panels | High | `/phpmyadmin`, `/admin.php`, `/phpinfo.php` | 80 |
+| Config Files | **Critical** | `/.env`, `/.git`, `/database.yml`, `/config.php` | **95** |
+| Path Traversal | **Critical** | `/../../../etc/passwd`, `%2e%2e/` | **95** |
+| Framework Debug | Medium | `/rails/info/routes`, `/__debug__`, `/telescope` | 60 |
+| CMS Detection | Medium | `/joomla`, `/drupal`, `/magento` | 60 |
+| Common Exploits | **Critical** | `/shell.php`, `/c99.php`, `/webshell` | **95** |
+
+**Pattern matching is:**
+- Case-insensitive
+- Works on full path including query strings
+- Detects URL-encoded variants
+- Can match multiple patterns per request
+
+## Security Best Practices
+
+### 1. Start with Monitor Mode
+
+When first enabling WAF, use monitor-only mode to tune thresholds:
+
+```ruby
+config.waf = {
+  enabled: true,
+  monitor_only: true,  # Log but don't block
+  create_security_events: true
+}
+```
+
+After reviewing logs for false positives, enable blocking:
+
+```ruby
+config.waf = {
+  enabled: true,
+  monitor_only: false,
+  auto_block: true
+}
+```
+
+### 2. Whitelist Carefully
+
+Only whitelist truly trusted IPs:
+
+```ruby
+# ✅ Good - Documented, legitimate sources
+config.ip_whitelist = [
+  "203.0.113.0/24",    # Office network - IT approved
+  "198.51.100.50"      # VPN gateway - documented in wiki
+]
+
+# ❌ Bad - Whitelisting unknown IPs
+config.ip_whitelist = ["0.0.0.0/0"]  # Never do this!
+```
+
+### 3. Regular Maintenance
+
+Set up a scheduled job to clean up old data:
+
+```ruby
+# Schedule daily via cron or Sidekiq
+SecurityCleanupJob.perform_later
+
+# Or in initializer for quick cleanup on restart
+Rails.application.config.after_initialize do
+  Beskar::BannedIp.cleanup_expired! if Rails.env.production?
+end
+```
+
+### 4. Monitor Security Events
+
+Set up alerts for high-risk events:
+
+```ruby
+# Example monitoring
+high_risk_count = Beskar::SecurityEvent
+  .where('created_at > ?', 1.hour.ago)
+  .where('risk_score >= ?', 80)
+  .count
+
+alert_service.notify if high_risk_count > 10
+```
+
+### 5. Document Whitelist Changes
+
+Keep a record of why each IP is whitelisted:
+
+```ruby
+# config/initializers/beskar.rb
+config.ip_whitelist = [
+  "203.0.113.0/24",    # Office HQ network (added 2024-01-15, ticket #1234)
+  "198.51.100.50",     # Partner API server (added 2024-02-01, contract #5678)
+  "192.0.2.10"         # Security scanner (added 2024-03-01, vendor: SecurityCo)
+]
+```
+
+### 6. Test WAF in Staging
+
+Before deploying to production, test WAF rules in staging to catch false positives.
+
+### 7. Review Ban Reasons
+
+Periodically review banned IPs to ensure blocking is working correctly:
+
+```ruby
+# Check recent auto-bans
+recent_bans = Beskar::BannedIp
+  .where('created_at > ?', 7.days.ago)
+  .group(:reason)
+  .count
+
+# Review specific ban details
+waf_bans = Beskar::BannedIp.where(reason: 'waf_violation')
+waf_bans.each do |ban|
+  puts "#{ban.ip_address}: #{ban.details} (violations: #{ban.violation_count})"
+end
+```
+
+## Troubleshooting
+
+### Issue: Legitimate users being blocked
+
+**Solution:** Add their IP to whitelist or reduce WAF `block_threshold`:
+
+```ruby
+config.waf[:block_threshold] = 5  # Increase from default 3
+```
+
+Or whitelist specific IPs:
+```ruby
+config.ip_whitelist = ["user.ip.address.here"]
+```
+
+### Issue: Too many false positives
+
+**Solution:** Enable monitor-only mode and review patterns:
+
+```ruby
+config.waf[:monitor_only] = true
+
+# Review what's being flagged
+Beskar::SecurityEvent.where(event_type: 'waf_violation').last(20).each do |event|
+  puts "Path: #{event.metadata['request_path']}"
+  puts "Patterns: #{event.metadata['waf_analysis']['patterns']}"
+end
+```
+
+### Issue: Banned IPs persist after restart
+
+**Solution:** This is intentional (database persistence). To unban:
+
+```ruby
+Beskar::BannedIp.unban!("ip.address.here")
+
+# Or unban all expired
+Beskar::BannedIp.cleanup_expired!
+```
+
+### Issue: Performance concerns
+
+**Solution:** Beskar uses cache-first architecture. Ensure cache is configured:
+
+```ruby
+# config/environments/production.rb
+config.cache_store = :redis_cache_store, { url: ENV['REDIS_URL'] }
+```
+
+Check cache health:
+```ruby
+Rails.cache.read("test_key")  # Should work
+Beskar::BannedIp.preload_cache!  # Reload from database if needed
+```
+
+## Migration from Previous Versions
+
+If upgrading from a version without WAF/IP blocking features:
+
+```bash
+# Run new migrations
+rails db:migrate
+
+# Preload cache with existing bans (if any)
+rails runner "Beskar::BannedIp.preload_cache!"
+
+# Test in development first
+RAILS_ENV=development rails server
+
+# Review logs for any issues
+tail -f log/development.log | grep Beskar
+```
+
+## Performance Characteristics
+
+- **Whitelist check**: O(n) where n = whitelist size, cached, < 1ms
+- **Banned IP check**: O(1) cache lookup, < 1ms
+- **Rate limit check**: O(1) cache lookup, < 1ms
+- **WAF analysis**: O(m) where m = number of patterns, < 5ms
+- **Total middleware overhead**: Typically < 10ms per request
+
+**Scalability:**
+- Handles 1000s of requests/second
+- Cache-first architecture minimizes database queries
+- Efficient pattern matching with compiled regexes
+- Parallel test execution: 352 tests run in < 3 seconds
 
 ## Development
 

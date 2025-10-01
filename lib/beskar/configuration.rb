@@ -1,10 +1,21 @@
 module Beskar
   class Configuration
-    attr_accessor :enable_waf, :waf_ruleset, :rate_limiting, :security_tracking, :risk_based_locking, :geolocation
+    attr_accessor :enable_waf, :waf_ruleset, :rate_limiting, :security_tracking, :risk_based_locking, :geolocation, :ip_whitelist, :waf
 
     def initialize
-      @enable_waf = false # Default to off
+      @enable_waf = false # Default to off (deprecated, use @waf[:enabled] instead)
       @waf_ruleset = :default
+      @ip_whitelist = [] # Array of IP addresses or CIDR ranges
+      @waf = {
+        enabled: false,                  # Master switch for WAF
+        auto_block: true,                # Automatically block IPs after threshold
+        block_threshold: 3,              # Number of violations before blocking
+        violation_window: 1.hour,        # Time window to count violations
+        block_durations: [1.hour, 6.hours, 24.hours, 7.days], # Escalating block durations
+        permanent_block_after: 5,        # Permanent block after N violations (nil = never)
+        create_security_events: true,    # Create SecurityEvent records
+        monitor_only: false              # If true, log but don't block (even if auto_block is true)
+      }
       @security_tracking = {
         enabled: true,
         track_successful_logins: true,
@@ -100,6 +111,25 @@ module Beskar
 
     def geolocation_cache_ttl
       @geolocation[:cache_ttl] || 4.hours
+    end
+
+    # WAF configuration helpers
+    def waf_enabled?
+      # Support both old enable_waf and new waf[:enabled]
+      @enable_waf || (@waf && @waf[:enabled])
+    end
+
+    def waf_auto_block?
+      waf_enabled? && @waf[:auto_block] && !@waf[:monitor_only]
+    end
+
+    def waf_monitor_only?
+      @waf[:monitor_only] == true
+    end
+
+    # IP Whitelist configuration helpers
+    def ip_whitelist_enabled?
+      @ip_whitelist.is_a?(Array) && @ip_whitelist.any?
     end
   end
 end

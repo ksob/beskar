@@ -6,6 +6,18 @@ module Beskar
       app.config.middleware.use ::Beskar::Middleware::RequestAnalyzer
     end
 
+    # Preload banned IPs into cache on startup
+    config.after_initialize do
+      if defined?(Beskar::BannedIp)
+        Rails.application.executor.wrap do
+          Beskar::BannedIp.preload_cache!
+          Rails.logger.info "[Beskar] Preloaded banned IPs into cache"
+        rescue => e
+          Rails.logger.warn "[Beskar] Failed to preload banned IPs: #{e.message}"
+        end
+      end
+    end
+
     initializer "beskar.warden_callbacks", after: :load_config_initializers do |app|
       if defined?(Warden)
         # Track successful authentication and check for high-risk locks
