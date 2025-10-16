@@ -5,7 +5,7 @@ Gem::Specification.new do |spec|
   spec.version = Beskar::VERSION
   spec.authors = ["Maciej Litwiniuk"]
   spec.email = ["maciej@litwiniuk.net"]
-  spec.homepage = "https://humadroid.io/"
+  spec.homepage = "https://humadroid.io/beskar"
   spec.summary = "An all-in-one security engine for Rails providing WAF, bot detection, and account takeover prevention."
   spec.description = "Rails Security Shield is a comprehensive, Rails-native security engine designed to provide multi-layered protection for modern web applications. It actively defends against common threats by integrating a powerful Web Application Firewall (WAF) to block attacks like SQLi and XSS, an advanced bot detection system using JavaScript challenges and honeypots, and robust account takeover prevention to stop brute-force and credential stuffing attacks.
 
@@ -17,7 +17,7 @@ Built as a mountable Rails Engine, it leverages core framework features like Act
   # spec.metadata["allowed_push_host"] = "TODO: Set to 'http://mygemserver.com'"
 
   spec.metadata["homepage_uri"] = spec.homepage
-  spec.metadata["source_code_uri"] = "https://github.com/prograils/beskar"
+  spec.metadata["source_code_uri"] = "https://github.com/humadroid-io/beskar"
   # spec.metadata["changelog_uri"] = "TODO: Put your gem's CHANGELOG.md URL here."
 
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
@@ -25,11 +25,11 @@ Built as a mountable Rails Engine, it leverages core framework features like Act
   end
 
   spec.add_dependency "rails", ">= 8.0.0"
-  
+
   # Optional: MaxMind DB reader for GeoIP functionality
   # Users need to provide their own GeoIP database due to licensing
   spec.add_dependency "maxminddb", "~> 0.1"
-  
+
   spec.add_development_dependency "debug"
   spec.add_development_dependency "devise"
   spec.add_development_dependency "ostruct"
