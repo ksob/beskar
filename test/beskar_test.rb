@@ -8,8 +8,7 @@ class BeskarTest < ActiveSupport::TestCase
   test "has default configuration" do
     config = Beskar.configuration
 
-    assert_not config.enable_waf
-    assert_equal :default, config.waf_ruleset
+    assert_not config.waf_enabled?
     assert config.security_tracking[:enabled]
     assert config.security_tracking[:track_successful_logins]
     assert config.security_tracking[:track_failed_logins]
@@ -40,21 +39,24 @@ class BeskarTest < ActiveSupport::TestCase
   end
 
   test "can configure WAF settings" do
-    original_waf = Beskar.configuration.enable_waf
-    original_ruleset = Beskar.configuration.waf_ruleset
+    original_waf = Beskar.configuration.waf.dup
 
     Beskar.configure do |config|
-      config.enable_waf = true
-      config.waf_ruleset = :strict
+      config.waf = {
+        enabled: true,
+        auto_block: true,
+        block_threshold: 2,
+        monitor_only: false
+      }
     end
 
     config = Beskar.configuration
-    assert config.enable_waf
-    assert_equal :strict, config.waf_ruleset
+    assert config.waf_enabled?
+    assert config.waf_auto_block?
+    assert_not config.waf_monitor_only?
 
     # Restore original config
-    Beskar.configuration.enable_waf = original_waf
-    Beskar.configuration.waf_ruleset = original_ruleset
+    Beskar.configuration.waf = original_waf
   end
 
   test "can configure rate limiting" do

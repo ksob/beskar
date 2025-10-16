@@ -1,12 +1,10 @@
 module Beskar
   class Configuration
-    attr_accessor :enable_waf, :waf_ruleset, :rate_limiting, :security_tracking, :risk_based_locking, :geolocation, :ip_whitelist, :waf, :authentication_models, :emergency_password_reset
+    attr_accessor :rate_limiting, :security_tracking, :risk_based_locking, :geolocation, :ip_whitelist, :waf, :authentication_models, :emergency_password_reset
 
     def initialize
-      @enable_waf = false # Default to off (deprecated, use @waf[:enabled] instead)
-      @waf_ruleset = :default
       @ip_whitelist = [] # Array of IP addresses or CIDR ranges
-      
+
       # Authentication models configuration
       # Auto-detect by default, or can be explicitly configured
       @authentication_models = {
@@ -14,13 +12,13 @@ module Beskar
         rails_auth: [], # Will be auto-detected: [:user, etc.]
         auto_detect: true # Set to false to use only explicitly configured models
       }
-      
+
       @waf = {
         enabled: false,                  # Master switch for WAF
         auto_block: true,                # Automatically block IPs after threshold
         block_threshold: 3,              # Number of violations before blocking
         violation_window: 1.hour,        # Time window to count violations
-        block_durations: [1.hour, 6.hours, 24.hours, 7.days], # Escalating block durations
+        block_durations: [ 1.hour, 6.hours, 24.hours, 7.days ], # Escalating block durations
         permanent_block_after: 5,        # Permanent block after N violations (nil = never)
         create_security_events: true,    # Create SecurityEvent records
         monitor_only: false              # If true, log but don't block (even if auto_block is true)
@@ -133,8 +131,7 @@ module Beskar
 
     # WAF configuration helpers
     def waf_enabled?
-      # Support both old enable_waf and new waf[:enabled]
-      @enable_waf || (@waf && @waf[:enabled])
+      @waf && @waf[:enabled]
     end
 
     def waf_auto_block?
@@ -153,7 +150,7 @@ module Beskar
     # Authentication models helpers
     def devise_scopes
       return @authentication_models[:devise] unless @authentication_models[:auto_detect]
-      
+
       # Auto-detect Devise models
       detected = []
       if defined?(Devise)
@@ -161,14 +158,14 @@ module Beskar
           detected << scope
         end
       end
-      
+
       # Merge with explicitly configured models
       (detected + Array(@authentication_models[:devise])).uniq
     end
 
     def rails_auth_scopes
       return @authentication_models[:rails_auth] unless @authentication_models[:auto_detect]
-      
+
       # Auto-detect Rails authentication models (has_secure_password)
       detected = []
       if defined?(ActiveRecord::Base)
@@ -176,7 +173,7 @@ module Beskar
         # This is a heuristic - models that have password_digest column
         ActiveRecord::Base.descendants.each do |model|
           next unless model.table_exists?
-          if model.column_names.include?('password_digest')
+          if model.column_names.include?("password_digest")
             scope = model.name.underscore.to_sym
             detected << scope unless devise_scopes.include?(scope)
           end
@@ -185,7 +182,7 @@ module Beskar
           Rails.logger.debug "[Beskar] Error detecting Rails auth model #{model.name}: #{e.message}"
         end
       end
-      
+
       # Merge with explicitly configured models
       (detected + Array(@authentication_models[:rails_auth])).uniq
     end

@@ -12,7 +12,7 @@ puts "Security Tracking Enabled: #{Beskar.configuration.security_tracking_enable
 puts "Track Successful Logins: #{Beskar.configuration.track_successful_logins?}"
 puts "Track Failed Logins: #{Beskar.configuration.track_failed_logins?}"
 puts "Auto Analyze Patterns: #{Beskar.configuration.auto_analyze_patterns?}"
-puts "WAF Enabled: #{Beskar.configuration.enable_waf}"
+puts "WAF Enabled: #{Beskar.configuration.waf_enabled?}"
 puts "Rate Limiting Config: #{Beskar.configuration.rate_limiting[:ip_attempts][:limit]} IP attempts per #{Beskar.configuration.rate_limiting[:ip_attempts][:period] / 3600}h"
 
 # Demo 2: Custom Configuration
@@ -31,8 +31,12 @@ Beskar.configure do |config|
     auto_analyze_patterns: false     # Disable auto analysis
   }
 
-  config.enable_waf = true
-  config.waf_ruleset = :strict
+  config.waf = {
+    enabled: true,
+    auto_block: true,
+    block_threshold: 2,
+    monitor_only: false
+  }
 
   config.rate_limiting = {
     ip_attempts: {
@@ -53,8 +57,8 @@ puts "Security Tracking Enabled: #{Beskar.configuration.security_tracking_enable
 puts "Track Successful Logins: #{Beskar.configuration.track_successful_logins?}"
 puts "Track Failed Logins: #{Beskar.configuration.track_failed_logins?}"
 puts "Auto Analyze Patterns: #{Beskar.configuration.auto_analyze_patterns?}"
-puts "WAF Enabled: #{Beskar.configuration.enable_waf}"
-puts "WAF Ruleset: #{Beskar.configuration.waf_ruleset}"
+puts "WAF Enabled: #{Beskar.configuration.waf_enabled?}"
+puts "WAF Auto-Block: #{Beskar.configuration.waf_auto_block?}"
 puts "Rate Limiting Config: #{Beskar.configuration.rate_limiting[:ip_attempts][:limit]} IP attempts per #{Beskar.configuration.rate_limiting[:ip_attempts][:period] / 60}min"
 
 # Demo 3: Testing Configuration Impact
@@ -137,15 +141,14 @@ puts "-" * 40
 
 # Restore original configuration
 Beskar.configuration.security_tracking = original_security_tracking
-Beskar.configuration.enable_waf = false
-Beskar.configuration.waf_ruleset = :default
+Beskar.configuration.waf[:enabled] = false
 
 puts "Configuration restored to defaults:"
 puts "Security Tracking Enabled: #{Beskar.configuration.security_tracking_enabled?}"
 puts "Track Successful Logins: #{Beskar.configuration.track_successful_logins?}"
 puts "Track Failed Logins: #{Beskar.configuration.track_failed_logins?}"
 puts "Auto Analyze Patterns: #{Beskar.configuration.auto_analyze_patterns?}"
-puts "WAF Enabled: #{Beskar.configuration.enable_waf}"
+puts "WAF Enabled: #{Beskar.configuration.waf_enabled?}"
 
 # Test that tracking works again
 puts "\nTesting restored configuration:"

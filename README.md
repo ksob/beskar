@@ -25,24 +25,62 @@ Add this line to your application's Gemfile:
 
 ```ruby
 gem 'beskar'
-````
+```
 
 And then execute:
 
 ```bash
-$ bundle install
+bundle install
 ```
 
-Next, run the installation generator. This will copy the necessary migrations and create an initializer file.
+Run the installation task to set up Beskar:
 
 ```bash
-$ rails g beskar:install
+bin/rails beskar:install
 ```
 
-Finally, run the database migrations:
+This will:
+- Copy all necessary migrations to your application
+- Create `config/initializers/beskar.rb` with sensible defaults
+- Display next steps for completing the setup
+
+Then run the database migrations:
 
 ```bash
-$ rails db:migrate
+bin/rails db:migrate
+```
+
+### Quick Start
+
+By default, Beskar enables the **Web Application Firewall (WAF) in monitor-only mode**. This means:
+- ✅ Vulnerability scans are detected and logged
+- ✅ Security events are created for analysis  
+- ⚠️ No requests are blocked yet (safe to enable in production)
+
+After monitoring for 24-48 hours, review the logs and disable monitor-only mode to enable active blocking:
+
+```ruby
+# config/initializers/beskar.rb
+config.waf = {
+  enabled: true,
+  monitor_only: false,  # Change this to enable blocking
+  # ... rest of configuration
+}
+```
+
+### Add to Your User Model
+
+Include the `SecurityTrackable` concern in your Devise user model:
+
+```ruby
+# app/models/user.rb
+class User < ApplicationRecord
+  include Beskar::SecurityTrackable
+  
+  devise :database_authenticatable, :registerable,
+         :recoverable, :rememberable, :validatable
+  # ... other Devise modules
+end
 ```
 
 ## Configuration

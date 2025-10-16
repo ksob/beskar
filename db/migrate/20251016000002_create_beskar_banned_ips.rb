@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class CreateBeskarBannedIps < ActiveRecord::Migration[8.0]
   def change
     create_table :beskar_banned_ips do |t|

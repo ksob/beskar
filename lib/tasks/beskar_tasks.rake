@@ -1,39 +1,112 @@
+# frozen_string_literal: true
+
 namespace :beskar do
-  desc "Show Beskar engine status and migration information"
-  task :status => :environment do
-    puts "Beskar Engine Status"
-    puts "===================="
-    puts "Engine root: #{Beskar::Engine.root}"
-    puts "Migrations found in engine: #{Dir[File.join(Beskar::Engine.root, 'db', 'migrate', '*.rb')].count}"
-    puts "Host app migration paths: #{Rails.application.paths['db/migrate'].to_a.join(', ')}"
-    puts ""
-    puts "Engine migrations are automatically available to the host application."
-    puts "Run 'rails db:migrate:status' to see all available migrations."
+  desc "Install Beskar: copy migrations and create initializer"
+  task install: :environment do
+    puts "=" * 80
+    puts "Installing Beskar Security..."
+    puts "=" * 80
+    puts
+
+    # Copy migrations
+    puts "📦 Copying migrations..."
+    begin
+      Rake::Task["beskar:install:migrations"].invoke
+    rescue RuntimeError
+      # In development/test within the gem, this task might not exist
+      # In a real app using the gem, it will work fine
+      puts "   (Skipping migration copy in gem development mode)"
+    end
+    puts "✓ Migrations ready"
+    puts
+
+    # Create initializer
+    initializer_path = Rails.root.join("config/initializers/beskar.rb")
+    
+    if File.exist?(initializer_path)
+      puts "⚠️  Initializer already exists at config/initializers/beskar.rb"
+      print "   Overwrite? (y/N): "
+      response = $stdin.gets.chomp.downcase
+      
+      unless response == 'y' || response == 'yes'
+        puts "   Skipping initializer creation"
+        puts
+        next_steps
+        exit
+      end
+    end
+
+    puts "📝 Creating initializer..."
+    template_path = File.expand_path("../beskar/templates/beskar_initializer.rb", __dir__)
+    FileUtils.cp(template_path, initializer_path)
+    puts "✓ Created config/initializers/beskar.rb"
+    puts
+
+    next_steps
   end
 
-  desc "Check if engine migrations are properly loaded"
-  task :check_migrations => :environment do
-    engine_migrations = Dir[File.join(Beskar::Engine.root, 'db', 'migrate', '*.rb')]
-
-    if engine_migrations.any?
-      puts "✓ Found #{engine_migrations.count} engine migration(s):"
-      engine_migrations.each do |migration|
-        migration_name = File.basename(migration, '.rb')
-        puts "  - #{migration_name}"
-      end
-    else
-      puts "✗ No engine migrations found"
-    end
-
-    migration_paths = Rails.application.paths['db/migrate'].to_a
-    engine_path = File.join(Beskar::Engine.root, 'db', 'migrate')
-
-    if migration_paths.include?(engine_path)
-      puts "✓ Engine migrations path is registered with Rails"
-    else
-      puts "✗ Engine migrations path is NOT registered with Rails"
-      puts "  Expected: #{engine_path}"
-      puts "  Current paths: #{migration_paths.join(', ')}"
-    end
+  def next_steps
+    puts "=" * 80
+    puts "Beskar Security has been installed!"
+    puts "=" * 80
+    puts
+    puts "Next steps:"
+    puts
+    puts "1. Run migrations to create the security tables:"
+    puts
+    puts "   bin/rails db:migrate"
+    puts
+    puts "2. Add the SecurityTrackable concern to your User model:"
+    puts
+    puts "   # app/models/user.rb"
+    puts "   class User < ApplicationRecord"
+    puts "     include Beskar::SecurityTrackable"
+    puts "     "
+    puts "     devise :database_authenticatable, :registerable,"
+    puts "            :recoverable, :rememberable, :validatable"
+    puts "     # ... rest of your Devise modules"
+    puts "   end"
+    puts
+    puts "3. Review the configuration file:"
+    puts
+    puts "   config/initializers/beskar.rb"
+    puts
+    puts "   By default, WAF is enabled in MONITOR-ONLY MODE. This means:"
+    puts "   - Vulnerability scans are detected and logged"
+    puts "   - No requests are blocked yet"
+    puts "   - Security events are created for analysis"
+    puts
+    puts "4. Monitor WAF activity (recommended for 24-48 hours):"
+    puts
+    puts "   # View all WAF logs"
+    puts "   tail -f log/production.log | grep \"Beskar::WAF\""
+    puts "   "
+    puts "   # Check what would be blocked"
+    puts "   rails console"
+    puts "   > Beskar::SecurityEvent.where(event_type: 'waf_violation')"
+    puts "       .where(\"metadata->>'would_be_blocked' = ?\", 'true').count"
+    puts
+    puts "5. When ready to enable blocking:"
+    puts
+    puts "   # config/initializers/beskar.rb"
+    puts "   config.waf = {"
+    puts "     enabled: true,"
+    puts "     monitor_only: false,  # <-- Change this to false"
+    puts "     # ... rest of config"
+    puts "   }"
+    puts
+    puts "6. Optional: Add IP whitelist for trusted sources:"
+    puts
+    puts "   # config/initializers/beskar.rb"
+    puts "   config.ip_whitelist = ["
+    puts "     \"YOUR_OFFICE_IP\","
+    puts "     \"YOUR_MONITORING_SERVICE_IP\""
+    puts "   ]"
+    puts
+    puts "=" * 80
+    puts "Documentation:"
+    puts "  - README: https://github.com/humadroid-io/beskar"
+    puts "  - WAF Monitor Mode: See MONITOR_ONLY_MODE.md"
+    puts "=" * 80
   end
 end

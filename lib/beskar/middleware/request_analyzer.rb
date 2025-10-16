@@ -51,10 +51,22 @@ module Beskar
                 "(not blocking): #{waf_analysis[:patterns].map { |p| p[:description] }.join(', ')}"
               )
             else
-              # Check if we should block (unless in monitor-only mode)
-              if !Beskar.configuration.waf_monitor_only? && Beskar::Services::Waf.should_block?(ip_address)
+              # Check if we should block
+              should_block = Beskar::Services::Waf.should_block?(ip_address)
+              
+              if Beskar.configuration.waf_monitor_only?
+                # Monitor-only mode: Just log, don't block
+                if should_block
+                  Rails.logger.warn(
+                    "[Beskar::Middleware] 🔍 MONITOR-ONLY: Would block IP #{ip_address} " \
+                    "after #{violation_count} WAF violations, but monitor_only=true. " \
+                    "Request proceeding normally."
+                  )
+                end
+              elsif should_block
+                # Actually block the request
                 Rails.logger.warn(
-                  "[Beskar::Middleware] Blocking IP #{ip_address} " \
+                  "[Beskar::Middleware] 🔒 Blocking IP #{ip_address} " \
                   "after #{violation_count} WAF violations"
                 )
                 # Block already handled by WAF.record_violation auto-block logic

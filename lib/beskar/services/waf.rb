@@ -164,8 +164,15 @@ module Beskar
           end
 
           # Check if we should auto-block (skip if whitelisted, in monitor-only mode)
-          if !whitelisted && config[:auto_block] && !config[:monitor_only] && new_count >= (config[:block_threshold] || 3)
-            auto_block_ip(ip_address, analysis_result, new_count)
+          threshold = config[:block_threshold] || 3
+          
+          if !whitelisted && config[:auto_block] && new_count >= threshold
+            if config[:monitor_only]
+              # Monitor-only mode: Log what WOULD happen but don't block
+              log_monitor_only_action(ip_address, analysis_result, new_count, threshold)
+            else
+              auto_block_ip(ip_address, analysis_result, new_count)
+            end
           end
 
           new_count
@@ -209,9 +216,11 @@ module Beskar
           }
 
           emoji = severity_emoji[analysis_result[:highest_severity]] || "🔍"
+          config = waf_config
+          monitor_mode_notice = config[:monitor_only] ? " [MONITOR-ONLY MODE]" : ""
           
           Rails.logger.warn(
-            "[Beskar::WAF] #{emoji} Vulnerability scan detected " \
+            "[Beskar::WAF] #{emoji} Vulnerability scan detected#{monitor_mode_notice} " \
             "(#{violation_count} violations) - " \
             "IP: #{ip_address}, " \
             "Severity: #{analysis_result[:highest_severity]}, " \
@@ -220,8 +229,28 @@ module Beskar
           )
         end
 
+        # Log what would happen in monitor-only mode (but don't actually block)
+        def log_monitor_only_action(ip_address, analysis_result, violation_count, threshold)
+          config = waf_config
+          duration = calculate_block_duration(violation_count, config)
+          
+          Rails.logger.warn(
+            "[Beskar::WAF] 🔍 MONITOR-ONLY: IP #{ip_address} WOULD BE BLOCKED " \
+            "(threshold reached: #{violation_count}/#{threshold} violations) - " \
+            "Duration would be: #{duration ? "#{duration / 3600.0} hours" : 'PERMANENT'}, " \
+            "Severity: #{analysis_result[:highest_severity]}, " \
+            "Patterns: #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}. " \
+            "To enable blocking, set config.waf[:monitor_only] = false"
+          )
+        end
+
         # Create security event for WAF violation
         def create_security_event(ip_address, analysis_result)
+          config = waf_config
+          violation_count = get_violation_count(ip_address)
+          threshold = config[:block_threshold] || 3
+          would_be_blocked = violation_count >= threshold
+          
           Beskar::SecurityEvent.create!(
             event_type: 'waf_violation',
             ip_address: ip_address,
@@ -230,7 +259,11 @@ module Beskar
             metadata: {
               waf_analysis: analysis_result,
               patterns_matched: analysis_result[:patterns].map { |p| p[:description] },
-              severity: analysis_result[:highest_severity]
+              severity: analysis_result[:highest_severity],
+              monitor_only_mode: config[:monitor_only],
+              would_be_blocked: would_be_blocked,
+              violation_count: violation_count,
+              block_threshold: threshold
             }
           )
         rescue => e

@@ -2,6 +2,7 @@
 ENV["RAILS_ENV"] = "test"
 
 require_relative "../test/dummy/config/environment"
+ActiveRecord::Migrator.migrations_paths = [ File.expand_path("dummy/db/migrate", __dir__), File.expand_path("../db/migrate", __dir__) ]
 require "rails/test_help"
 
 # Configure FactoryBot
@@ -9,6 +10,12 @@ require "factory_bot_rails"
 
 # Configure Mocha for mocking
 require "mocha/minitest"
+
+
+Rails.backtrace_cleaner.remove_silencers!
+
+Minitest.backtrace_filter = Minitest::BacktraceFilter.new
+
 
 # Simple test isolation helper
 module TestHelper
@@ -41,7 +48,7 @@ class ActiveSupport::TestCase
     # Reset configuration after worker finishes
     Beskar.configuration = Beskar::Configuration.new
   end
-  
+
   # Reset configuration before each test to ensure isolation
   setup do
     # Only reset if not already done by a subclass (like BeskarTestBase)
@@ -77,7 +84,7 @@ class ActionDispatch::IntegrationTest
 
   setup do
     Rails.application.reload_routes_unless_loaded
-    
+
     # Reset Beskar configuration before each integration test
     Beskar.configuration = Beskar::Configuration.new
     Beskar.configuration.security_tracking[:enabled] = true

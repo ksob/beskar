@@ -234,9 +234,16 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
     # Should log violations
     assert Beskar::Services::Waf.get_violation_count(ip) >= 3
     
-    # Should create security events
+    # Should create security events with monitor-only metadata
     events = Beskar::SecurityEvent.where(ip_address: ip, event_type: 'waf_violation')
     assert events.count > 0
+    
+    # Verify monitor-only metadata is present
+    last_event = events.last
+    assert last_event.metadata['monitor_only_mode'], "Event should indicate monitor-only mode"
+    assert last_event.metadata['would_be_blocked'], "Event should indicate it would be blocked"
+    assert_equal Beskar.configuration.waf[:block_threshold], last_event.metadata['block_threshold']
+    assert last_event.metadata['violation_count'] >= 3
     
     # But should NOT be banned
     assert_not Beskar::BannedIp.banned?(ip)
