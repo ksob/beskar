@@ -1,0 +1,307 @@
+<% content_for :page_title, "Security Event ##{@event.id}" %>
+
+<% content_for :header_actions do %>
+  <%= link_to "← Back to Events", security_events_path, class: "btn btn-secondary" %>
+  <% unless Beskar::BannedIp.banned?(@event.ip_address) %>
+    <%= link_to "Ban This IP", new_banned_ip_path(ip_address: @event.ip_address, reason: "security_event_#{@event.id}"),
+        class: "btn btn-danger" %>
+  <% end %>
+<% end %>
+
+<!-- Event Overview -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Event Details</h3>
+    <div class="card-subtitle">Event ID: <%= @event.id %></div>
+  </div>
+  <div class="card-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+      <!-- Event Type -->
+      <div>
+        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+          Event Type
+        </div>
+        <div style="font-size: 16px; font-weight: 500; color: #1A1F36;">
+          <%= format_event_type(@event.event_type) %>
+        </div>
+        <div style="font-size: 13px; color: #697386; margin-top: 0.25rem;">
+          <%= @event.event_type %>
+        </div>
+      </div>
+
+      <!-- Risk Score -->
+      <div>
+        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+          Risk Score
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="font-size: 24px; font-weight: 600; color: <%=
+            case @event.risk_score
+            when 0..30 then '#4CAF50'
+            when 31..60 then '#FF9800'
+            when 61..85 then '#E91E63'
+            else '#D32F2F'
+            end
+          %>;">
+            <%= @event.risk_score %>
+          </span>
+          <span class="badge badge-<%= risk_level_class(@event.risk_score) %>">
+            <%=
+              case @event.risk_score
+              when 0..30 then 'Low Risk'
+              when 31..60 then 'Medium Risk'
+              when 61..85 then 'High Risk'
+              else 'Critical'
+              end
+            %>
+          </span>
+        </div>
+      </div>
+
+      <!-- Timestamp -->
+      <div>
+        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+          Occurred At
+        </div>
+        <div style="font-size: 14px; color: #1A1F36;">
+          <%= @event.created_at.strftime("%B %d, %Y") %>
+        </div>
+        <div style="font-size: 13px; color: #697386; margin-top: 0.25rem;">
+          <%= @event.created_at.strftime("%H:%M:%S %Z") %>
+          (<%= time_ago_in_words(@event.created_at) %> ago)
+        </div>
+      </div>
+
+      <!-- IP Address -->
+      <div>
+        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+          IP Address
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="font-family: monospace; font-size: 16px; color: #1A1F36;">
+            <%= @event.ip_address %>
+          </span>
+          <% if @ip_ban %>
+            <span class="badge badge-danger">Banned</span>
+          <% end %>
+        </div>
+        <% if @event.metadata&.dig("geolocation") %>
+          <div style="font-size: 13px; color: #697386; margin-top: 0.25rem;">
+            <%= [@event.metadata.dig("geolocation", "city"),
+                 @event.metadata.dig("geolocation", "region"),
+                 @event.metadata.dig("geolocation", "country")].compact.join(", ") %>
+          </div>
+        <% end %>
+      </div>
+
+      <!-- User -->
+      <div>
+        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+          User
+        </div>
+        <% if @event.user %>
+          <div style="font-size: 14px; color: #1A1F36;">
+            <%= @event.user.try(:email) || "User ##{@event.user_id}" %>
+          </div>
+          <div style="font-size: 13px; color: #697386; margin-top: 0.25rem;">
+            ID: <%= @event.user_id %> • Type: <%= @event.user_type %>
+          </div>
+        <% elsif @event.attempted_email %>
+          <div style="font-size: 14px; color: #697386;">
+            <%= @event.attempted_email %> <span style="font-size: 12px;">(attempted)</span>
+          </div>
+        <% else %>
+          <div style="color: #C1C7D0;">No user associated</div>
+        <% end %>
+      </div>
+
+      <!-- Details -->
+      <% if @event.details.present? || @event.metadata&.dig("message").present? %>
+        <div>
+          <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+            Details
+          </div>
+          <div style="font-size: 14px; color: #1A1F36;">
+            <%= @event.details || @event.metadata&.dig("message") || "No additional details" %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </div>
+</div>
+
+<!-- User Agent & Device Info -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Device & Browser Information</h3>
+  </div>
+  <div class="card-body">
+    <div style="display: grid; grid-template-columns: 1fr; gap: 1rem;">
+      <!-- User Agent -->
+      <div>
+        <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386; margin-bottom: 0.5rem;">
+          User Agent
+        </div>
+        <div style="font-family: monospace; font-size: 13px; color: #1A1F36; background: #F4F5F7; padding: 0.75rem; border-radius: 6px; word-break: break-all;">
+          <%= @event.user_agent || "Not recorded" %>
+        </div>
+      </div>
+
+      <% if @event.device_info.present? %>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+          <% @event.device_info.each do |key, value| %>
+            <div>
+              <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386;">
+                <%= key.to_s.humanize %>
+              </div>
+              <div style="font-size: 14px; color: #1A1F36; margin-top: 0.25rem;">
+                <%= value || "-" %>
+              </div>
+            </div>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  </div>
+</div>
+
+<!-- Metadata -->
+<% if @event.metadata.present? && @event.metadata.any? %>
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Additional Metadata</h3>
+    </div>
+    <div class="card-body">
+      <pre style="font-family: monospace; font-size: 12px; background: #F4F5F7; padding: 1rem; border-radius: 6px; overflow-x: auto;"><%= JSON.pretty_generate(@event.metadata) %></pre>
+    </div>
+  </div>
+<% end %>
+
+<!-- Related Events -->
+<% if @related_events.any? %>
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Related Events from Same IP</h3>
+      <div class="card-subtitle"><%= @related_events.count %> other events from <%= @event.ip_address %></div>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Event Type</th>
+              <th>User</th>
+              <th>Risk Score</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @related_events.each do |event| %>
+              <tr>
+                <td>
+                  <div style="font-size: 13px;">
+                    <%= event.created_at.strftime("%Y-%m-%d %H:%M:%S") %>
+                  </div>
+                  <div style="font-size: 11px; color: #697386;">
+                    <%= time_ago_in_words(event.created_at) %> ago
+                  </div>
+                </td>
+                <td>
+                  <div style="font-size: 13px;">
+                    <%= format_event_type(event.event_type) %>
+                  </div>
+                </td>
+                <td>
+                  <% if event.user %>
+                    <%= event.user.try(:email) || "User ##{event.user_id}" %>
+                  <% elsif event.attempted_email %>
+                    <span style="color: #697386;"><%= event.attempted_email %></span>
+                  <% else %>
+                    <span style="color: #C1C7D0;">-</span>
+                  <% end %>
+                </td>
+                <td>
+                  <span class="badge badge-<%= risk_level_class(event.risk_score) %>">
+                    <%= event.risk_score %>
+                  </span>
+                </td>
+                <td>
+                  <%= link_to "View", security_event_path(event), class: "btn btn-sm btn-secondary" %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+<% end %>
+
+<!-- User Events -->
+<% if @user_events&.any? %>
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">User's Recent Events</h3>
+      <div class="card-subtitle"><%= @user_events.count %> other events from this user</div>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Event Type</th>
+              <th>IP Address</th>
+              <th>Risk Score</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @user_events.each do |event| %>
+              <tr>
+                <td>
+                  <div style="font-size: 13px;">
+                    <%= event.created_at.strftime("%Y-%m-%d %H:%M:%S") %>
+                  </div>
+                  <div style="font-size: 11px; color: #697386;">
+                    <%= time_ago_in_words(event.created_at) %> ago
+                  </div>
+                </td>
+                <td>
+                  <div style="font-size: 13px;">
+                    <%= format_event_type(event.event_type) %>
+                  </div>
+                </td>
+                <td>
+                  <div style="font-family: monospace; font-size: 13px;">
+                    <%= event.ip_address %>
+                  </div>
+                </td>
+                <td>
+                  <span class="badge badge-<%= risk_level_class(event.risk_score) %>">
+                    <%= event.risk_score %>
+                  </span>
+                </td>
+                <td>
+                  <%= link_to "View", security_event_path(event), class: "btn btn-sm btn-secondary" %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+<% end %>
+
+<!-- Actions -->
+<div style="display: flex; gap: 1rem; margin-top: 2rem;">
+  <%= link_to "← Back to Events", security_events_path, class: "btn btn-secondary" %>
+  <% unless @ip_ban %>
+    <%= link_to "Ban This IP", new_banned_ip_path(ip_address: @event.ip_address, reason: "security_event_#{@event.id}"),
+        class: "btn btn-danger" %>
+  <% else %>
+    <%= link_to "View Ban Details", banned_ip_path(@ip_ban), class: "btn btn-primary" %>
+  <% end %>
+</div>

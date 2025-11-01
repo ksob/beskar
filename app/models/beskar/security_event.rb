@@ -46,5 +46,19 @@ module Beskar
     def geolocation
       metadata&.dig("geolocation") || {}
     end
+
+    def details
+      # Extract details from metadata if available
+      # Check multiple possible fields where details might be stored
+      return nil unless metadata.present?
+
+      metadata["details"] ||
+        metadata["description"] ||
+        metadata["message"] ||
+        metadata["reason"] ||
+        metadata["error"] ||
+        metadata["info"] ||
+        nil
+    end
   end
 end

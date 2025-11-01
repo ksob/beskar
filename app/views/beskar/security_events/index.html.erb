@@ -1,0 +1,309 @@
+<% content_for :page_title, "Security Events" %>
+
+<% content_for :header_actions do %>
+  <div style="display: flex; gap: 0.5rem;">
+    <%= link_to "Export CSV", export_security_events_path(format: :csv, params: request.query_parameters),
+        class: "btn btn-secondary" %>
+    <%= link_to "Export JSON", export_security_events_path(format: :json, params: request.query_parameters),
+        class: "btn btn-secondary" %>
+  </div>
+<% end %>
+
+<!-- Filters Card -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Filters</h3>
+    <div class="card-subtitle">Narrow down security events</div>
+  </div>
+  <div class="card-body">
+    <%= form_with url: security_events_path, method: :get, local: true do |f| %>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+        <!-- Quick Time Range -->
+        <div class="form-group">
+          <label>Time Range</label>
+          <%= select_tag :time_range,
+              options_for_select([
+                ['All Time', ''],
+                ['Last Hour', 'last_hour'],
+                ['Last 24 Hours', 'last_24h'],
+                ['Last 7 Days', 'last_7d'],
+                ['Last 30 Days', 'last_30d']
+              ], params[:time_range]),
+              prompt: 'Select time range',
+              style: "width: 100%;" %>
+        </div>
+
+        <!-- Event Type -->
+        <div class="form-group">
+          <label>Event Type</label>
+          <%= select_tag :event_type,
+              options_for_select(@event_types, params[:event_type]),
+              prompt: 'All event types',
+              style: "width: 100%;" %>
+        </div>
+
+        <!-- Risk Level -->
+        <div class="form-group">
+          <label>Risk Level</label>
+          <%= select_tag :risk_level,
+              options_for_select([
+                ['Low (0-30)', 'low'],
+                ['Medium (31-60)', 'medium'],
+                ['High (61-85)', 'high'],
+                ['Critical (86-100)', 'critical']
+              ], params[:risk_level]),
+              prompt: 'All risk levels',
+              style: "width: 100%;" %>
+        </div>
+
+        <!-- IP Address -->
+        <div class="form-group">
+          <label>IP Address</label>
+          <%= text_field_tag :ip_address, params[:ip_address],
+              placeholder: "e.g., 192.168.1.1" %>
+        </div>
+
+        <!-- Email -->
+        <div class="form-group">
+          <label>User Email</label>
+          <%= text_field_tag :email, params[:email],
+              placeholder: "user@example.com" %>
+        </div>
+
+        <!-- Search -->
+        <div class="form-group">
+          <label>Search</label>
+          <%= text_field_tag :search, params[:search],
+              placeholder: "Search in all fields..." %>
+        </div>
+
+        <!-- Date Range -->
+        <div class="form-group">
+          <label>Start Date</label>
+          <%= date_field_tag :start_date, params[:start_date] %>
+        </div>
+
+        <div class="form-group">
+          <label>End Date</label>
+          <%= date_field_tag :end_date, params[:end_date] %>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+        <%= submit_tag "Apply Filters", class: "btn btn-primary" %>
+        <%= link_to "Clear Filters", security_events_path, class: "btn btn-secondary" %>
+
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem;">
+          <%= check_box_tag :threats_only, 'true', params[:threats_only] == 'true' %>
+          <label for="threats_only" style="margin: 0; font-size: 13px;">High threats only</label>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>
+
+<!-- Results Summary -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+  <div style="font-size: 14px; color: #697386;">
+    Showing <%= @pagination[:records].count %> of <%= number_with_delimiter(@pagination[:total_count]) %> events
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 0.5rem;">
+    <label style="margin: 0; font-size: 13px; color: #697386;">Per page:</label>
+    <%= form_with url: security_events_path, method: :get, local: true, style: "display: inline;" do |f| %>
+      <% request.query_parameters.except(:per_page).each do |key, value| %>
+        <%= hidden_field_tag key, value %>
+      <% end %>
+      <%= select_tag :per_page,
+          options_for_select([10, 25, 50, 100], params[:per_page]&.to_i || 25),
+          onchange: "this.form.submit();",
+          style: "padding: 0.25rem 0.5rem; font-size: 13px;" %>
+    <% end %>
+  </div>
+</div>
+
+<!-- Events Table -->
+<div class="card">
+  <div class="card-body" style="padding: 0;">
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Timestamp</th>
+            <th>Event Type</th>
+            <th>IP Address</th>
+            <th>User</th>
+            <th>Risk Score</th>
+            <th>User Agent</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if @events.any? %>
+            <% @events.each do |event| %>
+              <tr>
+                <td>
+                  <span style="font-family: monospace; font-size: 12px; color: #697386;">
+                    #<%= event.id %>
+                  </span>
+                </td>
+                <td>
+                  <div style="font-size: 13px;">
+                    <%= event.created_at.strftime("%Y-%m-%d") %>
+                  </div>
+                  <div style="font-size: 11px; color: #697386;">
+                    <%= event.created_at.strftime("%H:%M:%S %Z") %>
+                  </div>
+                </td>
+                <td>
+                  <div style="font-size: 13px; font-weight: 500;">
+                    <%= format_event_type(event.event_type) %>
+                  </div>
+                  <div style="font-size: 11px; color: #697386;">
+                    <%= event.event_type %>
+                  </div>
+                </td>
+                <td>
+                  <div style="font-family: monospace; font-size: 13px;">
+                    <%= event.ip_address %>
+                  </div>
+                  <% if event.metadata&.dig("geolocation", "country") %>
+                    <div style="font-size: 11px; color: #697386;">
+                      <%= [event.metadata.dig("geolocation", "city"),
+                           event.metadata.dig("geolocation", "country")].compact.join(", ") %>
+                    </div>
+                  <% end %>
+                </td>
+                <td>
+                  <% if event.user %>
+                    <div style="font-size: 13px;">
+                      <%= event.user.try(:email) || "User ##{event.user_id}" %>
+                    </div>
+                    <div style="font-size: 11px; color: #697386;">
+                      ID: <%= event.user_id %>
+                    </div>
+                  <% elsif event.attempted_email %>
+                    <div style="font-size: 13px; color: #697386;">
+                      <%= event.attempted_email %>
+                    </div>
+                    <div style="font-size: 11px; color: #C1C7D0;">
+                      (attempted)
+                    </div>
+                  <% else %>
+                    <span style="color: #C1C7D0;">-</span>
+                  <% end %>
+                </td>
+                <td>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span class="badge badge-<%= risk_level_class(event.risk_score) %>">
+                      <%= event.risk_score %>
+                    </span>
+                    <% if event.critical_threat? %>
+                      <svg width="16" height="16" fill="#D32F2F" viewBox="0 0 24 24">
+                        <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+                      </svg>
+                    <% elsif event.high_risk? %>
+                      <svg width="16" height="16" fill="#E91E63" viewBox="0 0 24 24">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+                      </svg>
+                    <% end %>
+                  </div>
+                </td>
+                <td>
+                  <div style="font-size: 11px; color: #697386; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <%= event.user_agent || "-" %>
+                  </div>
+                </td>
+                <td>
+                  <div style="display: flex; gap: 0.25rem;">
+                    <%= link_to "View", security_event_path(event),
+                        class: "btn btn-sm btn-secondary" %>
+
+                    <% unless Beskar::BannedIp.banned?(event.ip_address) %>
+                      <%= link_to "Ban IP", new_banned_ip_path(ip_address: event.ip_address, reason: "suspicious_activity"),
+                          class: "btn btn-sm btn-danger" %>
+                    <% end %>
+                  </div>
+                </td>
+              </tr>
+            <% end %>
+          <% else %>
+            <tr>
+              <td colspan="8" style="text-align: center; padding: 3rem;">
+                <div style="color: #697386;">
+                  <svg width="48" height="48" fill="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 1rem;">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                  </svg>
+                  <div style="font-size: 16px; font-weight: 500; margin-bottom: 0.5rem;">No security events found</div>
+                  <div style="font-size: 14px;">Try adjusting your filters or time range</div>
+                </div>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Pagination -->
+<% if @pagination[:total_pages] > 1 %>
+  <div class="pagination">
+    <% if @pagination[:has_previous] %>
+      <%= link_to "← Previous", security_events_path(params.merge(page: @pagination[:previous_page])),
+          class: "pagination-link" %>
+    <% else %>
+      <span class="pagination-link disabled">← Previous</span>
+    <% end %>
+
+    <% # Show page numbers with ellipsis for large page counts %>
+    <% if @pagination[:total_pages] <= 7 %>
+      <% (1..@pagination[:total_pages]).each do |page| %>
+        <%= link_to page, security_events_path(params.merge(page: page)),
+            class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+      <% end %>
+    <% else %>
+      <% if @pagination[:current_page] <= 4 %>
+        <% (1..5).each do |page| %>
+          <%= link_to page, security_events_path(params.merge(page: page)),
+              class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+        <% end %>
+        <span class="pagination-link disabled">...</span>
+        <%= link_to @pagination[:total_pages], security_events_path(params.merge(page: @pagination[:total_pages])),
+            class: "pagination-link" %>
+      <% elsif @pagination[:current_page] >= @pagination[:total_pages] - 3 %>
+        <%= link_to 1, security_events_path(params.merge(page: 1)),
+            class: "pagination-link" %>
+        <span class="pagination-link disabled">...</span>
+        <% ((@pagination[:total_pages] - 4)..@pagination[:total_pages]).each do |page| %>
+          <%= link_to page, security_events_path(params.merge(page: page)),
+              class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+        <% end %>
+      <% else %>
+        <%= link_to 1, security_events_path(params.merge(page: 1)),
+            class: "pagination-link" %>
+        <span class="pagination-link disabled">...</span>
+        <% ((@pagination[:current_page] - 1)..(@pagination[:current_page] + 1)).each do |page| %>
+          <%= link_to page, security_events_path(params.merge(page: page)),
+              class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+        <% end %>
+        <span class="pagination-link disabled">...</span>
+        <%= link_to @pagination[:total_pages], security_events_path(params.merge(page: @pagination[:total_pages])),
+            class: "pagination-link" %>
+      <% end %>
+    <% end %>
+
+    <% if @pagination[:has_next] %>
+      <%= link_to "Next →", security_events_path(params.merge(page: @pagination[:next_page])),
+          class: "pagination-link" %>
+    <% else %>
+      <span class="pagination-link disabled">Next →</span>
+    <% end %>
+  </div>
+
+  <div style="text-align: center; margin-top: 1rem; font-size: 13px; color: #697386;">
+    Page <%= @pagination[:current_page] %> of <%= @pagination[:total_pages] %> •
+    Total: <%= number_with_delimiter(@pagination[:total_count]) %> events
+  </div>
+<% end %>

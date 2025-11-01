@@ -1,0 +1,361 @@
+<% content_for :page_title, "Banned IPs" %>
+
+<% content_for :header_actions do %>
+  <div style="display: flex; gap: 0.5rem;">
+    <%= link_to "+ New Ban", new_banned_ip_path, class: "btn btn-primary" %>
+    <%= link_to "Export CSV", export_banned_ips_path(format: :csv, params: request.query_parameters),
+        class: "btn btn-secondary" %>
+    <%= link_to "Export JSON", export_banned_ips_path(format: :json, params: request.query_parameters),
+        class: "btn btn-secondary" %>
+  </div>
+<% end %>
+
+<!-- Filters Card -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Filters</h3>
+    <div class="card-subtitle">Search and filter banned IPs</div>
+  </div>
+  <div class="card-body">
+    <%= form_with url: banned_ips_path, method: :get, local: true do |f| %>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+        <!-- Status -->
+        <div class="form-group">
+          <label>Status</label>
+          <%= select_tag :status,
+              options_for_select([
+                ['All', ''],
+                ['Active', 'active'],
+                ['Expired', 'expired'],
+                ['Permanent', 'permanent'],
+                ['Temporary', 'temporary']
+              ], params[:status]),
+              style: "width: 100%;" %>
+        </div>
+
+        <!-- Reason -->
+        <div class="form-group">
+          <label>Reason</label>
+          <%= select_tag :reason,
+              options_for_select(@ban_reasons, params[:reason]),
+              prompt: 'All reasons',
+              style: "width: 100%;" %>
+        </div>
+
+        <!-- IP Search -->
+        <div class="form-group">
+          <label>IP Address</label>
+          <%= text_field_tag :ip_search, params[:ip_search],
+              placeholder: "Search IPs..." %>
+        </div>
+
+        <!-- Date Range -->
+        <div class="form-group">
+          <label>Banned After</label>
+          <%= date_field_tag :banned_after, params[:banned_after] %>
+        </div>
+
+        <div class="form-group">
+          <label>Banned Before</label>
+          <%= date_field_tag :banned_before, params[:banned_before] %>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+        <%= submit_tag "Apply Filters", class: "btn btn-primary" %>
+        <%= link_to "Clear Filters", banned_ips_path, class: "btn btn-secondary" %>
+      </div>
+    <% end %>
+  </div>
+</div>
+
+<!-- Results Summary -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+  <div style="font-size: 14px; color: #697386;">
+    Showing <%= @pagination[:records].count %> of <%= number_with_delimiter(@pagination[:total_count]) %> banned IPs
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 0.5rem;">
+    <label style="margin: 0; font-size: 13px; color: #697386;">Per page:</label>
+    <%= form_with url: banned_ips_path, method: :get, local: true, style: "display: inline;" do |f| %>
+      <% request.query_parameters.except(:per_page).each do |key, value| %>
+        <%= hidden_field_tag key, value %>
+      <% end %>
+      <%= select_tag :per_page,
+          options_for_select([10, 25, 50, 100], params[:per_page]&.to_i || 25),
+          onchange: "this.form.submit();",
+          style: "padding: 0.25rem 0.5rem; font-size: 13px;" %>
+    <% end %>
+  </div>
+</div>
+
+<!-- Bulk Actions Form -->
+<%= form_with url: bulk_action_banned_ips_path, method: :post, local: true, id: "bulk-actions-form" do |f| %>
+  <!-- Bulk Actions Bar -->
+  <div class="card" id="bulk-actions-bar" style="display: none; margin-bottom: 1rem;">
+    <div class="card-body" style="padding: 0.75rem 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 1rem;">
+          <span style="font-size: 14px; color: #697386;">
+            <span id="selected-count">0</span> items selected
+          </span>
+
+          <div style="display: flex; gap: 0.5rem;">
+            <%= submit_tag "Unban Selected", name: "bulk_action", value: "unban",
+                class: "btn btn-sm btn-secondary",
+                onclick: "return confirm('Are you sure you want to unban the selected IPs?');" %>
+            <%= submit_tag "Make Permanent", name: "bulk_action", value: "make_permanent",
+                class: "btn btn-sm btn-danger",
+                onclick: "return confirm('Are you sure you want to make the selected bans permanent?');" %>
+
+            <div style="display: flex; align-items: center; gap: 0.25rem;">
+              <%= select_tag :duration,
+                  options_for_select([
+                    ['Extend by 24h', '24h'],
+                    ['Extend by 7d', '7d'],
+                    ['Extend by 30d', '30d']
+                  ]),
+                  style: "padding: 0.25rem 0.5rem; font-size: 13px;" %>
+              <%= submit_tag "Extend", name: "bulk_action", value: "extend",
+                  class: "btn btn-sm btn-warning" %>
+            </div>
+          </div>
+        </div>
+
+        <button type="button" onclick="clearSelection()" class="btn btn-sm btn-secondary">
+          Clear Selection
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Banned IPs Table -->
+  <div class="card">
+    <div class="card-body" style="padding: 0;">
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 40px;">
+                <input type="checkbox" id="select-all" onchange="toggleSelectAll(this)">
+              </th>
+              <th>IP Address</th>
+              <th>Reason</th>
+              <th>Banned At</th>
+              <th>Expires</th>
+              <th>Status</th>
+              <th>Violations</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if @banned_ips.any? %>
+              <% @banned_ips.each do |ban| %>
+                <tr>
+                  <td>
+                    <%= check_box_tag "ip_ids[]", ban.id, false,
+                        class: "ban-checkbox",
+                        onchange: "updateBulkActions()" %>
+                  </td>
+                  <td>
+                    <div style="font-family: monospace; font-size: 14px; font-weight: 500;">
+                      <%= ban.ip_address %>
+                    </div>
+                    <% if ban.metadata&.dig("geolocation", "country") %>
+                      <div style="font-size: 11px; color: #697386; margin-top: 2px;">
+                        <%= [ban.metadata.dig("geolocation", "city"),
+                             ban.metadata.dig("geolocation", "country")].compact.join(", ") %>
+                      </div>
+                    <% end %>
+                  </td>
+                  <td>
+                    <div style="font-size: 13px;">
+                      <%= ban.reason.humanize %>
+                    </div>
+                    <% if ban.details.present? %>
+                      <div style="font-size: 11px; color: #697386; margin-top: 2px;">
+                        <%= truncate(ban.details, length: 50) %>
+                      </div>
+                    <% end %>
+                  </td>
+                  <td>
+                    <div style="font-size: 13px;">
+                      <%= ban.banned_at.strftime("%Y-%m-%d") %>
+                    </div>
+                    <div style="font-size: 11px; color: #697386;">
+                      <%= ban.banned_at.strftime("%H:%M:%S") %>
+                    </div>
+                  </td>
+                  <td>
+                    <% if ban.permanent? %>
+                      <span class="badge badge-critical">Never</span>
+                    <% elsif ban.expires_at %>
+                      <div style="font-size: 13px;">
+                        <%= ban.expires_at.strftime("%Y-%m-%d %H:%M") %>
+                      </div>
+                      <div style="font-size: 11px; color: #697386;">
+                        <%= distance_of_time_in_words(Time.current, ban.expires_at) %>
+                      </div>
+                    <% else %>
+                      <span style="color: #C1C7D0;">-</span>
+                    <% end %>
+                  </td>
+                  <td>
+                    <% if ban.permanent? %>
+                      <span class="badge badge-critical">Permanent</span>
+                    <% elsif ban.active? %>
+                      <span class="badge badge-danger">Active</span>
+                    <% else %>
+                      <span class="badge badge-neutral">Expired</span>
+                    <% end %>
+                  </td>
+                  <td>
+                    <div style="text-align: center;">
+                      <% if ban.violation_count > 0 %>
+                        <span style="font-size: 14px; font-weight: 600; color: <%= ban.violation_count > 3 ? '#D32F2F' : '#E91E63' %>;">
+                          <%= ban.violation_count %>
+                        </span>
+                      <% else %>
+                        <span style="color: #C1C7D0;">0</span>
+                      <% end %>
+                    </div>
+                  </td>
+                  <td>
+                    <div style="display: flex; gap: 0.25rem; align-items: center;">
+                      <%= link_to "View", banned_ip_path(ban),
+                          class: "btn btn-sm btn-secondary" %>
+
+                      <% if ban.active? && !ban.permanent? %>
+                        <%= link_to "Extend", extend_banned_ip_path(ban, duration: '24h'),
+                            data: {
+                              "turbo-method": "post",
+                              "turbo-confirm": "Extend this ban by 24 hours?"
+                            },
+                            class: "btn btn-sm btn-warning" %>
+                      <% end %>
+
+                      <%= link_to "Unban", banned_ip_path(ban),
+                          data: {
+                            "turbo-method": "delete",
+                            "turbo-confirm": "Are you sure you want to unban #{ban.ip_address}?"
+                          },
+                          class: "btn btn-sm btn-danger" %>
+                    </div>
+                  </td>
+                </tr>
+              <% end %>
+            <% else %>
+              <tr>
+                <td colspan="8" style="text-align: center; padding: 3rem;">
+                  <div style="color: #697386;">
+                    <svg width="48" height="48" fill="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 1rem;">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+                    </svg>
+                    <div style="font-size: 16px; font-weight: 500; margin-bottom: 0.5rem;">No banned IPs found</div>
+                    <div style="font-size: 14px;">Try adjusting your filters or add a new ban</div>
+                  </div>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+<% end %>
+
+<!-- Pagination -->
+<% if @pagination[:total_pages] > 1 %>
+  <div class="pagination">
+    <% if @pagination[:has_previous] %>
+      <%= link_to "← Previous", banned_ips_path(params.merge(page: @pagination[:previous_page])),
+          class: "pagination-link" %>
+    <% else %>
+      <span class="pagination-link disabled">← Previous</span>
+    <% end %>
+
+    <% # Show page numbers %>
+    <% if @pagination[:total_pages] <= 7 %>
+      <% (1..@pagination[:total_pages]).each do |page| %>
+        <%= link_to page, banned_ips_path(params.merge(page: page)),
+            class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+      <% end %>
+    <% else %>
+      <% if @pagination[:current_page] <= 4 %>
+        <% (1..5).each do |page| %>
+          <%= link_to page, banned_ips_path(params.merge(page: page)),
+              class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+        <% end %>
+        <span class="pagination-link disabled">...</span>
+        <%= link_to @pagination[:total_pages], banned_ips_path(params.merge(page: @pagination[:total_pages])),
+            class: "pagination-link" %>
+      <% elsif @pagination[:current_page] >= @pagination[:total_pages] - 3 %>
+        <%= link_to 1, banned_ips_path(params.merge(page: 1)),
+            class: "pagination-link" %>
+        <span class="pagination-link disabled">...</span>
+        <% ((@pagination[:total_pages] - 4)..@pagination[:total_pages]).each do |page| %>
+          <%= link_to page, banned_ips_path(params.merge(page: page)),
+              class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+        <% end %>
+      <% else %>
+        <%= link_to 1, banned_ips_path(params.merge(page: 1)),
+            class: "pagination-link" %>
+        <span class="pagination-link disabled">...</span>
+        <% ((@pagination[:current_page] - 1)..(@pagination[:current_page] + 1)).each do |page| %>
+          <%= link_to page, banned_ips_path(params.merge(page: page)),
+              class: "pagination-link #{'active' if page == @pagination[:current_page]}" %>
+        <% end %>
+        <span class="pagination-link disabled">...</span>
+        <%= link_to @pagination[:total_pages], banned_ips_path(params.merge(page: @pagination[:total_pages])),
+            class: "pagination-link" %>
+      <% end %>
+    <% end %>
+
+    <% if @pagination[:has_next] %>
+      <%= link_to "Next →", banned_ips_path(params.merge(page: @pagination[:next_page])),
+          class: "pagination-link" %>
+    <% else %>
+      <span class="pagination-link disabled">Next →</span>
+    <% end %>
+  </div>
+
+  <div style="text-align: center; margin-top: 1rem; font-size: 13px; color: #697386;">
+    Page <%= @pagination[:current_page] %> of <%= @pagination[:total_pages] %> •
+    Total: <%= number_with_delimiter(@pagination[:total_count]) %> banned IPs
+  </div>
+<% end %>
+
+<script>
+  function toggleSelectAll(checkbox) {
+    const checkboxes = document.querySelectorAll('.ban-checkbox');
+    checkboxes.forEach(cb => {
+      cb.checked = checkbox.checked;
+    });
+    updateBulkActions();
+  }
+
+  function updateBulkActions() {
+    const checkboxes = document.querySelectorAll('.ban-checkbox:checked');
+    const bulkBar = document.getElementById('bulk-actions-bar');
+    const selectedCount = document.getElementById('selected-count');
+
+    if (checkboxes.length > 0) {
+      bulkBar.style.display = 'block';
+      selectedCount.textContent = checkboxes.length;
+    } else {
+      bulkBar.style.display = 'none';
+    }
+
+    // Update select-all checkbox state
+    const selectAll = document.getElementById('select-all');
+    const allCheckboxes = document.querySelectorAll('.ban-checkbox');
+    if (allCheckboxes.length > 0) {
+      selectAll.checked = checkboxes.length === allCheckboxes.length;
+    }
+  }
+
+  function clearSelection() {
+    document.getElementById('select-all').checked = false;
+    toggleSelectAll(document.getElementById('select-all'));
+  }
+</script>

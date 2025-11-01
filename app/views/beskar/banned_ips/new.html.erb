@@ -1,0 +1,310 @@
+<% content_for :page_title, "New IP Ban" %>
+
+<% content_for :header_actions do %>
+  <%= link_to "← Cancel", banned_ips_path, class: "btn btn-secondary" %>
+<% end %>
+
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Ban IP Address</h3>
+    <div class="card-subtitle">Add a new IP address to the ban list</div>
+  </div>
+  <div class="card-body">
+    <%= form_with model: @banned_ip, url: banned_ips_path, local: true do |f| %>
+      <% if @banned_ip.errors.any? %>
+        <div class="alert alert-danger">
+          <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 0.5rem;">
+            <%= pluralize(@banned_ip.errors.count, "error") %> prohibited this ban from being saved:
+          </h4>
+          <ul style="margin: 0; padding-left: 1.5rem;">
+            <% @banned_ip.errors.full_messages.each do |message| %>
+              <li style="font-size: 13px;"><%= message %></li>
+            <% end %>
+          </ul>
+        </div>
+      <% end %>
+
+      <div style="display: grid; grid-template-columns: 1fr; gap: 1.5rem; max-width: 600px;">
+        <!-- IP Address -->
+        <div class="form-group">
+          <%= f.label :ip_address, "IP Address *" %>
+          <%= f.text_field :ip_address,
+              value: @suggested_ip || @banned_ip.ip_address,
+              placeholder: "e.g., 192.168.1.1",
+              required: true,
+              style: "font-family: monospace;" %>
+          <div style="font-size: 12px; color: #697386; margin-top: 0.25rem;">
+            Enter the IP address to ban. IPv4 and IPv6 formats are supported.
+          </div>
+        </div>
+
+        <!-- Reason -->
+        <div class="form-group">
+          <%= f.label :reason, "Ban Reason *" %>
+          <%= f.select :reason,
+              options_for_select([
+                ['Rate Limit Abuse', 'rate_limit_abuse'],
+                ['Authentication Abuse', 'authentication_abuse'],
+                ['WAF Violation', 'waf_violation'],
+                ['Brute Force Attack', 'brute_force_attack'],
+                ['Suspicious Activity', 'suspicious_activity'],
+                ['Manual Ban', 'manual_ban'],
+                ['Other', 'other']
+              ], @suggested_reason || @banned_ip.reason),
+              { prompt: 'Select a reason...' },
+              { required: true } %>
+          <div style="font-size: 12px; color: #697386; margin-top: 0.25rem;">
+            Select the primary reason for banning this IP address.
+          </div>
+        </div>
+
+        <!-- Ban Duration -->
+        <div class="form-group">
+          <label>Ban Duration *</label>
+          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+              <%= radio_button_tag :ban_type, 'temporary', !@banned_ip.permanent?,
+                  onchange: "toggleDurationFields()" %>
+              <span style="font-weight: normal;">Temporary Ban</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+              <%= radio_button_tag :ban_type, 'permanent', @banned_ip.permanent?,
+                  onchange: "toggleDurationFields()" %>
+              <span style="font-weight: normal; color: #D32F2F;">Permanent Ban</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Temporary Ban Options -->
+        <div id="temporary-options" style="<%= @banned_ip.permanent? ? 'display: none;' : '' %>">
+          <div class="form-group">
+            <label>Duration</label>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;">
+              <% [
+                ['1 Hour', 1.hour],
+                ['6 Hours', 6.hours],
+                ['24 Hours', 24.hours],
+                ['7 Days', 7.days],
+                ['30 Days', 30.days],
+                ['90 Days', 90.days]
+              ].each do |label, duration| %>
+                <label style="display: flex; align-items: center; padding: 0.75rem; background: #FAFBFC; border: 1px solid #E3E8EE; border-radius: 6px; cursor: pointer;">
+                  <%= radio_button_tag :duration, duration.to_i, false %>
+                  <span style="margin-left: 0.5rem; font-size: 13px; font-weight: normal;"><%= label %></span>
+                </label>
+              <% end %>
+            </div>
+            <div style="font-size: 12px; color: #697386; margin-top: 0.5rem;">
+              Or specify a custom expiry date and time:
+            </div>
+          </div>
+
+          <div class="form-group">
+            <%= f.label :expires_at, "Custom Expiry Date/Time" %>
+            <%= f.datetime_field :expires_at,
+                value: @banned_ip.expires_at&.strftime('%Y-%m-%dT%H:%M'),
+                min: DateTime.now.strftime('%Y-%m-%dT%H:%M') %>
+          </div>
+        </div>
+
+        <!-- Details -->
+        <div class="form-group">
+          <%= f.label :details, "Additional Details" %>
+          <%= f.text_area :details,
+              rows: 3,
+              placeholder: "Provide any additional context or details about this ban..." %>
+          <div style="font-size: 12px; color: #697386; margin-top: 0.25rem;">
+            Optional. Add any relevant information about why this IP was banned.
+          </div>
+        </div>
+
+        <!-- Violation Count -->
+        <div class="form-group">
+          <%= f.label :violation_count, "Initial Violation Count" %>
+          <%= f.number_field :violation_count,
+              value: @banned_ip.violation_count || 1,
+              min: 0 %>
+          <div style="font-size: 12px; color: #697386; margin-top: 0.25rem;">
+            Set the initial violation count. This affects ban escalation for repeat offenders.
+          </div>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #E3E8EE; margin: 1.5rem 0;">
+
+        <!-- Related Security Event (if coming from an event) -->
+        <% if params[:event_id].present? %>
+          <div class="alert alert-info">
+            <strong>Related Event:</strong> This ban is being created in response to security event #<%= params[:event_id] %>.
+            <%= link_to "View Event", security_event_path(params[:event_id]), target: "_blank" %>
+          </div>
+        <% end %>
+
+        <!-- Submit Buttons -->
+        <div style="display: flex; gap: 0.5rem;">
+          <%= f.submit "Ban IP Address", class: "btn btn-danger" %>
+          <%= link_to "Cancel", banned_ips_path, class: "btn btn-secondary" %>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>
+
+<!-- Preview Card -->
+<div class="card" id="ban-preview" style="display: none;">
+  <div class="card-header">
+    <h3 class="card-title">Ban Preview</h3>
+    <div class="card-subtitle">This is how the ban will appear</div>
+  </div>
+  <div class="card-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+      <div>
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386;">
+          IP Address
+        </div>
+        <div style="font-family: monospace; font-size: 14px; color: #1A1F36; margin-top: 0.25rem;" id="preview-ip">
+          -
+        </div>
+      </div>
+      <div>
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386;">
+          Reason
+        </div>
+        <div style="font-size: 14px; color: #1A1F36; margin-top: 0.25rem;" id="preview-reason">
+          -
+        </div>
+      </div>
+      <div>
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386;">
+          Duration
+        </div>
+        <div style="font-size: 14px; color: #1A1F36; margin-top: 0.25rem;" id="preview-duration">
+          -
+        </div>
+      </div>
+      <div>
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; color: #697386;">
+          Status
+        </div>
+        <div style="margin-top: 0.25rem;">
+          <span class="badge badge-danger" id="preview-status">Active</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function toggleDurationFields() {
+    const isPermanent = document.querySelector('input[name="ban_type"]:checked').value === 'permanent';
+    const temporaryOptions = document.getElementById('temporary-options');
+
+    if (isPermanent) {
+      temporaryOptions.style.display = 'none';
+      // Clear duration selections
+      document.querySelectorAll('input[name="duration"]').forEach(input => {
+        input.checked = false;
+      });
+      document.getElementById('banned_ip_expires_at').value = '';
+    } else {
+      temporaryOptions.style.display = 'block';
+    }
+
+    updatePreview();
+  }
+
+  function updatePreview() {
+    const previewCard = document.getElementById('ban-preview');
+    const ipInput = document.getElementById('banned_ip_ip_address');
+    const reasonSelect = document.getElementById('banned_ip_reason');
+
+    if (ipInput.value || reasonSelect.value) {
+      previewCard.style.display = 'block';
+
+      // Update IP
+      document.getElementById('preview-ip').textContent = ipInput.value || '-';
+
+      // Update reason
+      const reasonText = reasonSelect.options[reasonSelect.selectedIndex]?.text || '-';
+      document.getElementById('preview-reason').textContent = reasonText;
+
+      // Update duration
+      const isPermanent = document.querySelector('input[name="ban_type"]:checked')?.value === 'permanent';
+      if (isPermanent) {
+        document.getElementById('preview-duration').textContent = 'Permanent';
+        document.getElementById('preview-duration').style.color = '#D32F2F';
+        document.getElementById('preview-status').className = 'badge badge-critical';
+        document.getElementById('preview-status').textContent = 'Permanent';
+      } else {
+        const durationRadio = document.querySelector('input[name="duration"]:checked');
+        const customExpiry = document.getElementById('banned_ip_expires_at').value;
+
+        if (customExpiry) {
+          const expiryDate = new Date(customExpiry);
+          document.getElementById('preview-duration').textContent = expiryDate.toLocaleString();
+        } else if (durationRadio) {
+          const label = durationRadio.parentElement.textContent.trim();
+          document.getElementById('preview-duration').textContent = label;
+        } else {
+          document.getElementById('preview-duration').textContent = 'Not specified';
+        }
+        document.getElementById('preview-duration').style.color = '#1A1F36';
+        document.getElementById('preview-status').className = 'badge badge-danger';
+        document.getElementById('preview-status').textContent = 'Active';
+      }
+    } else {
+      previewCard.style.display = 'none';
+    }
+  }
+
+  // Set up event listeners
+  document.addEventListener('DOMContentLoaded', function() {
+    // Update preview on input changes
+    document.getElementById('banned_ip_ip_address').addEventListener('input', updatePreview);
+    document.getElementById('banned_ip_reason').addEventListener('change', updatePreview);
+    document.getElementById('banned_ip_expires_at').addEventListener('change', updatePreview);
+
+    document.querySelectorAll('input[name="duration"]').forEach(input => {
+      input.addEventListener('change', function() {
+        // Clear custom expiry when selecting a preset duration
+        document.getElementById('banned_ip_expires_at').value = '';
+        updatePreview();
+      });
+    });
+
+    // Clear preset duration when entering custom expiry
+    document.getElementById('banned_ip_expires_at').addEventListener('input', function() {
+      if (this.value) {
+        document.querySelectorAll('input[name="duration"]').forEach(input => {
+          input.checked = false;
+        });
+      }
+    });
+
+    // Initial preview update
+    updatePreview();
+
+    // Handle form submission
+    document.querySelector('form').addEventListener('submit', function(e) {
+      const isPermanent = document.querySelector('input[name="ban_type"]:checked').value === 'permanent';
+
+      if (isPermanent) {
+        // Set permanent flag
+        const permanentField = document.createElement('input');
+        permanentField.type = 'hidden';
+        permanentField.name = 'banned_ip[permanent]';
+        permanentField.value = 'true';
+        this.appendChild(permanentField);
+      } else {
+        // Calculate expires_at based on duration if not custom
+        const durationRadio = document.querySelector('input[name="duration"]:checked');
+        const customExpiry = document.getElementById('banned_ip_expires_at').value;
+
+        if (!customExpiry && durationRadio) {
+          const durationSeconds = parseInt(durationRadio.value);
+          const expiresAt = new Date(Date.now() + durationSeconds * 1000);
+          document.getElementById('banned_ip_expires_at').value = expiresAt.toISOString().slice(0, 16);
+        }
+      }
+    });
+  });
+</script>

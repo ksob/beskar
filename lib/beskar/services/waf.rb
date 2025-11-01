@@ -272,23 +272,31 @@ module Beskar
           config = waf_config
           duration = calculate_block_duration(violation_count, config)
 
-          Beskar::BannedIp.ban!(
-            ip_address,
-            reason: 'waf_violation',
-            duration: duration,
-            permanent: duration.nil?,
-            details: "WAF violations: #{violation_count} - #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}",
-            metadata: {
-              violation_count: violation_count,
-              patterns: analysis_result[:patterns],
-              highest_severity: analysis_result[:highest_severity],
-              blocked_at: Time.current
-            }
-          )
+          Beskar::Logger.debug("[WAF] Attempting to ban IP #{ip_address} with duration: #{duration.inspect}", component: :WAF)
 
-          Beskar::Logger.warn("🔒 Auto-blocked IP #{ip_address} " \
-            "after #{violation_count} violations " \
-            "(duration: #{duration ? "#{duration / 3600} hours" : 'permanent'})", component: :WAF)
+          begin
+            banned_ip = Beskar::BannedIp.ban!(
+              ip_address,
+              reason: 'waf_violation',
+              duration: duration,
+              permanent: duration.nil?,
+              details: "WAF violations: #{violation_count} - #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}",
+              metadata: {
+                violation_count: violation_count,
+                patterns: analysis_result[:patterns],
+                highest_severity: analysis_result[:highest_severity],
+                blocked_at: Time.current
+              }
+            )
+
+            Beskar::Logger.warn("🔒 Auto-blocked IP #{ip_address} " \
+              "after #{violation_count} violations " \
+              "(duration: #{duration ? "#{duration / 3600} hours" : 'permanent'}), " \
+              "Ban ID: #{banned_ip.id}", component: :WAF)
+          rescue => e
+            Beskar::Logger.error("[WAF] Failed to create ban for #{ip_address}: #{e.class} - #{e.message}", component: :WAF)
+            raise
+          end
         end
 
         # Calculate block duration based on violation count

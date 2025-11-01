@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Configurable log levels and output backends
   - Include module support for automatic component detection in classes
   - Single point of configuration for all logging
+- **Security Dashboard** - Mountable web interface for monitoring and managing security
+  - Real-time security event monitoring with advanced filtering and pagination
+  - IP ban management with bulk actions, extend, and unban capabilities
+  - Statistics overview with risk distribution and threat analysis
+  - Export functionality for security events and banned IPs (CSV/JSON)
+  - Stripe-inspired minimalist design with embedded styles (no CSS dependencies)
+  - Custom pagination and filtering (no Kaminari/Pagy dependency)
+  - Configurable authentication via `config.authenticate_admin` proc
+  - Rails 7+ compatible with built-in CSRF protection
+  - Install generator for easy setup (`rails generate beskar:install`)
+  - Full documentation in [DASHBOARD.md](DASHBOARD.md)
 
 ### Changed
 

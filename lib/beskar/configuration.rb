@@ -1,10 +1,14 @@
 module Beskar
   class Configuration
-    attr_accessor :rate_limiting, :security_tracking, :risk_based_locking, :geolocation, :ip_whitelist, :waf, :authentication_models, :emergency_password_reset, :monitor_only
+    attr_accessor :rate_limiting, :security_tracking, :risk_based_locking, :geolocation, :ip_whitelist, :waf, :authentication_models, :emergency_password_reset, :monitor_only, :authenticate_admin
 
     def initialize
       @monitor_only = false # Global monitor-only mode - logs everything but doesn't block
       @ip_whitelist = [] # Array of IP addresses or CIDR ranges
+
+      # Dashboard authentication - configure this to restrict access to the dashboard
+      # Example: config.authenticate_admin = proc { authenticate_admin! }
+      @authenticate_admin = nil
 
       # Authentication models configuration
       # Auto-detect by default, or can be explicitly configured
