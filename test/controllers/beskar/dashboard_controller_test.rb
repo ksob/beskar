@@ -43,13 +43,14 @@ module Beskar
       assert_response :success
     end
 
-    test "allows access when no authentication configured" do
+    test "requires authentication configuration" do
       # Reset to no authentication
       Beskar.configuration.authenticate_admin = nil
 
       get "/beskar/dashboard"
 
-      assert_response :success
+      assert_response :unauthorized
+      assert_match /Beskar authentication not configured/, response.body
     end
 
     # Dashboard display tests

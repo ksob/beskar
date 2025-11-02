@@ -2,6 +2,38 @@
 
 Beskar.configure do |config|
   # ============================================================================
+  # Dashboard Authentication (REQUIRED)
+  # ============================================================================
+  # Configure how users authenticate to access the Beskar dashboard.
+  # This is REQUIRED and must be set for all environments.
+  #
+  # The authenticate_admin callback receives the request object and should
+  # return truthy value to allow access, falsey to deny.
+  #
+  # Example 1: Devise with admin role
+  # config.authenticate_admin = ->(request) do
+  #   user = request.env['warden']&.authenticate(scope: :user)
+  #   user&.admin?
+  # end
+  #
+  # Example 2: Simple token-based authentication
+  # config.authenticate_admin = ->(request) do
+  #   request.headers['Authorization'] == "Bearer #{ENV['BESKAR_ADMIN_TOKEN']}"
+  # end
+  #
+  # Example 3: For development/testing only (NOT for production!)
+  # config.authenticate_admin = ->(request) do
+  #   Rails.env.development? || Rails.env.test?
+  # end
+  #
+  # Example 4: HTTP Basic Auth
+  # config.authenticate_admin = ->(request) do
+  #   authenticate_or_request_with_http_basic do |username, password|
+  #     username == ENV['BESKAR_USERNAME'] && password == ENV['BESKAR_PASSWORD']
+  #   end
+  # end
+
+  # ============================================================================
   # Web Application Firewall (WAF) - ENABLED IN MONITOR MODE BY DEFAULT
   # ============================================================================
   # Detects and logs vulnerability scanning attempts (WordPress, phpMyAdmin, etc.)

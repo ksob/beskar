@@ -16,33 +16,47 @@ module Beskar
     # For example, you might want to use Devise's authenticate_admin! or
     # a custom authentication method
     def authenticate_admin!
-      # If custom authentication is configured, use it
-      if Beskar.configuration.authenticate_admin.present?
-        begin
-          result = Beskar.configuration.authenticate_admin.call(request)
-          unless result
-            handle_authentication_failure
-            return false
-          end
-        rescue => e
-          Rails.logger.error "Beskar authentication error: #{e.message}"
-          handle_authentication_failure
-          return false
-        end
-      else
-        # Default behavior: allow in development, require configuration in production
-        if Rails.env.production?
-          render plain: "Authentication required. Configure Beskar.configuration.authenticate_admin in your initializer.", status: :unauthorized
-          return false
-        elsif Rails.env.test?
-          # Allow access in test environment
-          return true
-        else
-          # Development mode - show a warning but allow access
-          Rails.logger.warn "Beskar dashboard accessed without authentication configuration (development mode)"
-          return true
-        end
+      unless Beskar.configuration.authenticate_admin.present?
+        handle_missing_authentication_configuration
+        return false
       end
+
+      handle_custom_authentication
+    end
+
+    def handle_custom_authentication
+      result = Beskar.configuration.authenticate_admin.call(request)
+      return true if result
+
+      handle_authentication_failure
+      false
+    rescue => e
+      Rails.logger.error "Beskar authentication error: #{e.message}"
+      handle_authentication_failure
+      false
+    end
+
+    def handle_missing_authentication_configuration
+      error_message = <<~MSG
+        Beskar authentication not configured!
+
+        Configure Beskar.configuration.authenticate_admin in your initializer:
+
+        # config/initializers/beskar.rb
+        Beskar.configuration.authenticate_admin = ->(request) do
+          # Example 1: Check for admin user with Devise
+          # current_user = warden.authenticate(scope: :user)
+          # current_user&.admin?
+
+          # Example 2: Simple token-based auth
+          # request.headers['Authorization'] == 'Bearer YOUR_SECRET_TOKEN'
+
+          # Example 3: For development/testing (NOT for production!)
+          # Rails.env.development? || Rails.env.test?
+        end
+      MSG
+
+      render plain: error_message, status: :unauthorized
     end
 
     def handle_authentication_failure

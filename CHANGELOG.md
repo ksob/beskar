@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Use `Beskar.configuration.monitor_only?` instead
   - See [BREAKING_CHANGES.md](BREAKING_CHANGES.md) for detailed migration guide
 
+- **Dashboard authentication now required in all environments**
+  - Previous behavior: Dashboard allowed access in development/test without authentication
+  - New behavior: `config.authenticate_admin` must be explicitly configured for all environments
+  - **Why this change**: Prevents production security surprises by requiring explicit authentication setup
+  - **Migration**: Add `config.authenticate_admin` proc to your initializer (see examples in template)
+  - Developers who want to bypass auth in development must explicitly configure it
+
 ### Added
 
 - Ban records (`Beskar::BannedIp`) are now created even in monitor-only mode
@@ -49,8 +56,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Different severity levels: Critical (IP spoofing), Medium (UnknownFormat), Low (RecordNotFound)
   - Exception-based violations count toward auto-blocking thresholds
   - Works seamlessly alongside existing WAF vulnerability patterns
+- **Enhanced Dashboard Authentication System**
+  - Helpful error messages with configuration examples when authentication not configured
+  - Clear, actionable guidance shows 4 authentication strategy examples (Devise, token-based, HTTP Basic, development bypass)
+  - Error response includes properly formatted code examples in initializer format
+  - Authentication configuration prominently documented at top of initializer template
+  - Support for any authentication strategy via flexible proc-based configuration
 
 ### Changed
+
+- **Refactored ApplicationController authentication for better maintainability**
+  - Simplified authentication flow from deeply nested conditionals to flat, single-responsibility methods
+  - Reduced method complexity: main `authenticate_admin!` is now 4 lines (was 20+ lines with 3-4 nesting levels)
+  - Extracted authentication logic into focused methods:
+    - `authenticate_admin!`: Routes to appropriate strategy (configuration check + delegation)
+    - `handle_custom_authentication`: Executes configured authentication with error handling
+    - `handle_missing_authentication_configuration`: Shows helpful error with examples
+  - All authentication paths now explicitly return `true` (allow) or `false` (deny)
+  - Consistent error handling for both HTML and JSON responses
+  - Improved exception handling with detailed error logging
+  - Added comprehensive test suite: 42 tests with 122 assertions covering all authentication scenarios
 
 - Monitor-only mode is now a system-wide concept rather than WAF-specific
 - Ban records are created but not enforced when `monitor_only = true`
@@ -67,12 +92,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consistent behavior across all security features
 - Clearer semantics for what monitor-only mode means
 
+### Security
+
+- **Dashboard authentication hardening**: Removed environment-based authentication defaults
+  - Eliminates risk of accidentally deploying without authentication configured
+  - Forces explicit security decisions during initial setup
+  - All environments (development, test, production) now require authentication configuration
+  - Provides clear, immediate feedback when authentication is missing
+  - Reduces attack surface by failing secure (deny by default)
+
 ### Documentation
 
 - Updated README with new configuration structure
 - Enhanced MONITOR_ONLY_MODE.md with examples of querying ban records
 - Added migration guide in BREAKING_CHANGES.md
 - Created PROJECT_DOCUMENTATION.md for development reference
+- Updated PROJECT_DOCUMENTATION.md with comprehensive dashboard authentication section
+  - Documented authentication flow and architecture
+  - Added configuration examples and design principles
+  - Included test coverage details
+- Updated initializer template (`lib/beskar/templates/beskar_initializer.rb`) with prominent authentication documentation
+  - Dashboard Authentication section moved to top (REQUIRED)
+  - Four complete authentication strategy examples
+  - Clear warnings about development-only bypass patterns
 
 
 ### Versioning Policy

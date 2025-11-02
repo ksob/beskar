@@ -17,7 +17,7 @@
 -   **Advanced Bot Detection:** Multi-layered defense using JavaScript challenges and invisible honeypots to filter out malicious bots while allowing legitimate ones.
 -   **Modular Architecture:** Devise-specific code is isolated in separate services for maintainability and extensibility.
 -   **Rails-Native Architecture:** Built as a mountable `Rails::Engine`, it leverages `ActiveJob` and `Rails.cache` for high performance and low overhead.
--   **Real-Time Dashboard (Coming Soon):** A mountable dashboard to visualize security events and monitor threats as they happen.
+-   **Security Dashboard:** A mountable web interface for monitoring security events, managing IP bans, and viewing statistics. Features configurable authentication, real-time filtering, and export capabilities. See [Dashboard Authentication](#dashboard-authentication) section below.
 
 ## Installation
 
@@ -52,6 +52,12 @@ bin/rails db:migrate
 
 ### Quick Start
 
+**1. Configure Dashboard Authentication (Required)**
+
+Before using Beskar, you must configure authentication for the dashboard. See the [Dashboard Authentication](#dashboard-authentication) section below for details and examples.
+
+**2. Enable WAF Monitoring**
+
 By default, Beskar enables the **Web Application Firewall (WAF) in monitor-only mode**. This means:
 - ✅ Vulnerability scans are detected and logged
 - ✅ Security events are created for analysis
@@ -67,6 +73,69 @@ config.waf = {
   # ... rest of configuration
 }
 ```
+
+### Dashboard Authentication (REQUIRED)
+
+**⚠️ IMPORTANT: Dashboard authentication must be configured for all environments.**
+
+The Beskar dashboard requires authentication to prevent unauthorized access. You must configure how users authenticate to access the dashboard by setting up the `authenticate_admin` callback:
+
+```ruby
+# config/initializers/beskar.rb
+Beskar.configure do |config|
+  # REQUIRED: Configure dashboard authentication
+  config.authenticate_admin = ->(request) do
+    # Return truthy to allow access, falsey to deny
+
+    # Example 1: Devise with admin role (recommended for production)
+    user = request.env['warden']&.authenticate(scope: :user)
+    user&.admin?
+  end
+end
+```
+
+**Why this is required:** Previous versions allowed unauthenticated access in development/test environments, which could lead to production security issues. Now, authentication must be explicitly configured for all environments to prevent accidental exposure.
+
+**Other Authentication Strategies:**
+
+```ruby
+# Token-based authentication
+config.authenticate_admin = ->(request) do
+  request.headers['Authorization'] == "Bearer #{ENV['BESKAR_ADMIN_TOKEN']}"
+end
+
+# HTTP Basic Auth
+config.authenticate_admin = ->(request) do
+  authenticate_or_request_with_http_basic do |username, password|
+    username == ENV['BESKAR_USERNAME'] && password == ENV['BESKAR_PASSWORD']
+  end
+end
+
+# Development/Testing bypass (use with caution!)
+config.authenticate_admin = ->(request) do
+  Rails.env.development? || Rails.env.test?
+end
+```
+
+**Accessing the Dashboard:**
+
+After configuring authentication, mount the engine in your routes:
+
+```ruby
+# config/routes.rb
+Rails.application.routes.draw do
+  mount Beskar::Engine => "/beskar"
+end
+```
+
+Then visit `http://localhost:3000/beskar` to access the dashboard.
+
+**Dashboard Features:**
+- 📊 Security event monitoring with filtering and search
+- 🚫 IP ban management (view, extend, unban)
+- 📈 Statistics and risk distribution analysis
+- 📥 Export capabilities (CSV/JSON)
+- 🔒 CSRF protection and secure by default
 
 ### Add to Your User Model
 
@@ -90,6 +159,14 @@ You can configure Beskar in the initializer file created by the installer:
 ```ruby
 # config/initializers/beskar.rb
 Beskar.configure do |config|
+  # === Dashboard Authentication (REQUIRED) ===
+  # Configure how users authenticate to access the Beskar dashboard
+  config.authenticate_admin = ->(request) do
+    # Return truthy to allow access, falsey to deny
+    user = request.env['warden']&.authenticate(scope: :user)
+    user&.admin?
+  end
+
   # === Security Tracking ===
   # Controls what security events are tracked and analyzed
   config.security_tracking = {

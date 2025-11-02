@@ -33,13 +33,14 @@ module Beskar
       assert_response :success
     end
 
-    test "allows access when authentication disabled" do
+    test "requires authentication configuration" do
       Beskar.configure do |config|
         config.authenticate_admin = nil  # No authentication when nil
       end
 
       get "/beskar/banned_ips"
-      assert_response :success
+      assert_response :unauthorized
+      assert_match /Beskar authentication not configured/, response.body
     end
 
     # Index Action Tests

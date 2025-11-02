@@ -36,7 +36,11 @@ Beskar.configure do |config|
   config.waf = {
     enabled: true,
     auto_block: true,
-    block_threshold: 2
+    block_threshold: 2,
+    record_not_found_exclusions: [
+      %r{/posts/.*},
+      %r{/articles/\d+}
+    ]
   }
 
   config.rate_limiting = {
@@ -160,6 +164,109 @@ User.track_failed_authentication(request_mock, :user)
 events_created = Beskar::SecurityEvent.count - pre_restore_count
 puts "✅ #{events_created} security events created with restored configuration"
 
+# Demo 6: WAF Exception Detection (NEW)
+puts "\n🛡️  Demo 6: WAF Exception Detection Features"
+puts "-" * 40
+
+# Enable WAF for this demo
+Beskar.configure do |config|
+  config.waf = {
+    enabled: true,
+    auto_block: true,
+    block_threshold: 3,
+    violation_window: 1.hour,
+    create_security_events: true,
+    record_not_found_exclusions: [
+      %r{/posts/.*},
+      %r{/articles/\d+}
+    ]
+  }
+end
+
+puts "WAF configured with exception detection:"
+puts "- Detects ActionController::UnknownFormat"
+puts "- Detects ActionDispatch::RemoteIp::IpSpoofAttackError"
+puts "- Detects ActiveRecord::RecordNotFound (with exclusions)"
+puts "- Exclusions: /posts/.*, /articles/\\d+"
+
+# Test exception detection
+puts "\nTesting Rails exception detection:"
+
+# Mock request for UnknownFormat
+unknown_format_request = OpenStruct.new(
+  fullpath: "/users/123.exe",
+  path: "/users/123.exe",
+  ip: "192.168.1.100",
+  user_agent: "Scanner/1.0"
+)
+
+# Test UnknownFormat detection
+unknown_format_exception = ActionController::UnknownFormat.new("Unknown format requested")
+analysis = Beskar::Services::Waf.analyze_exception(unknown_format_exception, unknown_format_request)
+
+if analysis && analysis[:threat_detected]
+  puts "✅ UnknownFormat detected as threat"
+  puts "   - Severity: #{analysis[:highest_severity]}"
+  puts "   - Description: #{analysis[:patterns].first[:description]}"
+end
+
+# Test RecordNotFound with exclusion
+excluded_request = OpenStruct.new(
+  fullpath: "/posts/non-existent",
+  path: "/posts/non-existent",
+  ip: "192.168.1.101",
+  user_agent: "Mozilla/5.0"
+)
+
+record_not_found_exception = ActiveRecord::RecordNotFound.new("Couldn't find Post")
+excluded_analysis = Beskar::Services::Waf.analyze_exception(record_not_found_exception, excluded_request)
+
+if excluded_analysis.nil?
+  puts "✅ RecordNotFound on /posts/* correctly excluded"
+end
+
+# Test RecordNotFound without exclusion
+scan_request = OpenStruct.new(
+  fullpath: "/admin/users/999999",
+  path: "/admin/users/999999",
+  ip: "192.168.1.102",
+  user_agent: "Scanner/1.0"
+)
+
+scan_analysis = Beskar::Services::Waf.analyze_exception(record_not_found_exception, scan_request)
+
+if scan_analysis && scan_analysis[:threat_detected]
+  puts "✅ RecordNotFound on /admin/users/* detected as threat"
+  puts "   - Severity: #{scan_analysis[:highest_severity]}"
+  puts "   - Description: #{scan_analysis[:patterns].first[:description]}"
+end
+
+# Test IP Spoofing detection
+spoof_request = OpenStruct.new(
+  fullpath: "/admin",
+  path: "/admin",
+  ip: "192.168.1.103",
+  user_agent: "Attacker/1.0"
+)
+
+ip_spoof_exception = ActionDispatch::RemoteIp::IpSpoofAttackError.new("IP spoofing attack detected")
+spoof_analysis = Beskar::Services::Waf.analyze_exception(ip_spoof_exception, spoof_request)
+
+if spoof_analysis && spoof_analysis[:threat_detected]
+  puts "✅ IP Spoofing detected as CRITICAL threat"
+  puts "   - Severity: #{spoof_analysis[:highest_severity]}"
+  puts "   - Risk Score: #{Beskar::Services::Waf.send(:severity_to_risk_score, spoof_analysis[:highest_severity])}"
+end
+
+puts "\nWAF Exception Detection Summary:"
+puts "- Rails exceptions can trigger WAF violations"
+puts "- Different severities: Critical (IP spoofing), Medium (UnknownFormat), Low (RecordNotFound)"
+puts "- RecordNotFound can be excluded to prevent false positives"
+puts "- All violations count toward auto-blocking threshold"
+
+# Disable WAF after demo
+Beskar.configuration.waf[:enabled] = false
+
 # Summary
 puts "\n📊 Summary"
 puts "-" * 40
@@ -176,3 +283,4 @@ puts "   - Showed custom configuration options"
 puts "   - Tested configuration impact on tracking behavior"
 puts "   - Verified security tracking can be selectively disabled"
 puts "   - Confirmed configuration restoration works properly"
+puts "   - Demonstrated WAF exception detection capabilities"
