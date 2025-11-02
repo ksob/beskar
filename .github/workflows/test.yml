@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Install dependencies
+        run: bundle install
+
+      - name: Set up database
+        run: |
+          # cd test/dummy
+          # rm -f storage/*.sqlite3 storage/*.sqlite3-*
+          # rm -f db/migrate/*beskar.rb
+          # bundle exec rails beskar:install:migrations
+          bundle exec rails db:create db:migrate RAILS_ENV=test
+
+      - name: Run tests
+        run: bundle exec rake app:test
