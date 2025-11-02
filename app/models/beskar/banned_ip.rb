@@ -12,6 +12,10 @@ module Beskar
       self.metadata ||= {}
     end
 
+    # Cache management callbacks
+    after_save :update_cache
+    after_destroy :clear_cache
+
     scope :active, -> { where("expires_at IS NULL OR expires_at > ?", Time.current) }
     scope :permanent, -> { where(permanent: true) }
     scope :temporary, -> { where(permanent: false) }
@@ -147,6 +151,26 @@ module Beskar
       def cleanup_expired!
         expired.destroy_all
       end
+    end
+
+    private
+
+    def update_cache
+      return unless active?
+
+      cache_key = "beskar:banned_ip:#{ip_address}"
+      ttl = calculate_cache_ttl
+      Rails.cache.write(cache_key, true, expires_in: ttl)
+    end
+
+    def clear_cache
+      Rails.cache.delete("beskar:banned_ip:#{ip_address}")
+    end
+
+    def calculate_cache_ttl
+      return nil if permanent? || expires_at.nil?
+
+      (expires_at - Time.current).to_i
     end
   end
 end

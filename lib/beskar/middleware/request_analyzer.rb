@@ -9,6 +9,8 @@ module Beskar
         request = ActionDispatch::Request.new(env)
         ip_address = request.ip
 
+        Beskar::Logger.debug("[RequestAnalyzer] Processing request from IP: #{ip_address}, Path: #{request.path}", component: :Middleware)
+
         # 1. Check if IP is whitelisted (whitelisted IPs skip blocking but still get logged)
         is_whitelisted = Beskar::Services::IpWhitelist.whitelisted?(ip_address)
 
@@ -44,12 +46,15 @@ module Beskar
 
         # 4. Check WAF patterns (vulnerability scans)
         if Beskar.configuration.waf_enabled?
+          Beskar::Logger.debug("[RequestAnalyzer] WAF enabled, analyzing request", component: :Middleware)
           waf_analysis = Beskar::Services::Waf.analyze_request(request)
 
           if waf_analysis
+            Beskar::Logger.debug("[RequestAnalyzer] WAF detected threat: #{waf_analysis[:patterns].map { |p| p[:description] }.join(', ')}", component: :Middleware)
             # Log the violation (and create security event if configured)
             # Pass whitelist status to prevent auto-blocking whitelisted IPs
             violation_count = Beskar::Services::Waf.record_violation(ip_address, waf_analysis, whitelisted: is_whitelisted)
+            Beskar::Logger.debug("[RequestAnalyzer] Violation count after recording: #{violation_count}", component: :Middleware)
 
             # Log even for whitelisted IPs (but don't block)
             if is_whitelisted
@@ -58,6 +63,7 @@ module Beskar
             else
               # Check if we should block
               should_block = Beskar::Services::Waf.should_block?(ip_address)
+              Beskar::Logger.debug("[RequestAnalyzer] Should block IP #{ip_address}?: #{should_block}", component: :Middleware)
 
               if Beskar.configuration.monitor_only?
                 # Monitor-only mode: Just log, don't block (but ban record was created by WAF.record_violation)
@@ -75,11 +81,37 @@ module Beskar
                 return blocked_response("Access denied due to suspicious activity.")
               end
             end
+          else
+            Beskar::Logger.debug("[RequestAnalyzer] No WAF threat detected for path: #{request.path}", component: :Middleware)
           end
+        else
+          Beskar::Logger.debug("[RequestAnalyzer] WAF is disabled", component: :Middleware)
         end
 
         # 5. Process the request normally (will raise 404 if route not found)
+        Beskar::Logger.debug("[RequestAnalyzer] Passing request to application", component: :Middleware)
         @app.call(env)
+      rescue ActionController::UnknownFormat => e
+        # Analyze unknown format as potential scanner
+        if Beskar.configuration.waf_enabled?
+          handle_rails_exception(request, e, ip_address, is_whitelisted)
+        end
+        # Re-raise to allow normal error handling
+        raise
+      rescue ActionDispatch::RemoteIp::IpSpoofAttackError => e
+        # Handle IP spoofing attack
+        if Beskar.configuration.waf_enabled?
+          handle_rails_exception(request, e, ip_address, is_whitelisted)
+        end
+        # Re-raise to allow normal error handling
+        raise
+      rescue ActiveRecord::RecordNotFound => e
+        # Analyze record not found as potential enumeration scan
+        if Beskar.configuration.waf_enabled?
+          handle_rails_exception(request, e, ip_address, is_whitelisted)
+        end
+        # Re-raise to allow normal error handling
+        raise
       rescue ActionController::RoutingError => e
         # If WAF is enabled, log 404s as potential scanning attempts
         if Beskar.configuration.waf_enabled?
@@ -149,6 +181,40 @@ module Beskar
         end
 
         false
+      end
+
+      def handle_rails_exception(request, exception, ip_address, is_whitelisted)
+        # Analyze the exception using WAF
+        waf_analysis = Beskar::Services::Waf.analyze_exception(exception, request)
+
+        if waf_analysis
+          Beskar::Logger.debug("[RequestAnalyzer] WAF detected threat from exception: #{exception.class.name}", component: :Middleware)
+
+          # Record the violation (similar to regular WAF violations)
+          violation_count = Beskar::Services::Waf.record_violation(ip_address, waf_analysis, whitelisted: is_whitelisted)
+
+          # Log for whitelisted IPs
+          if is_whitelisted
+            Beskar::Logger.info("Exception-based WAF violation from whitelisted IP #{ip_address} " \
+              "(not blocking): #{exception.class.name} - #{waf_analysis[:patterns].first[:description]}", component: :Middleware)
+          else
+            # Check if we should block
+            should_block = Beskar::Services::Waf.should_block?(ip_address)
+
+            if Beskar.configuration.monitor_only?
+              if should_block
+                Beskar::Logger.warn("🔍 MONITOR-ONLY: Would block IP #{ip_address} " \
+                  "after #{violation_count} WAF violations (exception: #{exception.class.name}), " \
+                  "but monitor_only=true. Request proceeding normally.", component: :Middleware)
+              end
+            elsif should_block && !Beskar.configuration.monitor_only?
+              Beskar::Logger.warn("🔒 Blocking IP #{ip_address} " \
+                "after #{violation_count} WAF violations (exception: #{exception.class.name})", component: :Middleware)
+              # Note: We don't return blocked response here as exception is already raised
+              # The ban record is created by WAF.record_violation
+            end
+          end
+        end
       end
 
       def log_404_for_waf(request, error)

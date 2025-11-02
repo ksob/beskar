@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Rails 7+ compatible with built-in CSRF protection
   - Install generator for easy setup (`rails generate beskar:install`)
   - Full documentation in [DASHBOARD.md](DASHBOARD.md)
+- **WAF Rails Exception Detection** - Enhanced security through Rails exception analysis
+  - Detects `ActionController::UnknownFormat` exceptions (e.g., `/users/1.exe`) as potential scanning attempts
+  - Detects `ActionDispatch::RemoteIp::IpSpoofAttackError` as critical IP spoofing attacks
+  - Detects `ActiveRecord::RecordNotFound` as potential record enumeration scans
+  - Configurable exclusion patterns for `RecordNotFound` to prevent false positives
+  - New configuration: `config.waf[:record_not_found_exclusions]` accepts regex patterns
+  - Different severity levels: Critical (IP spoofing), Medium (UnknownFormat), Low (RecordNotFound)
+  - Exception-based violations count toward auto-blocking thresholds
+  - Works seamlessly alongside existing WAF vulnerability patterns
 
 ### Changed
 

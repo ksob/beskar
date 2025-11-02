@@ -3,6 +3,32 @@ module Beskar
     class Waf
       # Common vulnerability scan patterns
       VULNERABILITY_PATTERNS = {
+        rails_exceptions: {
+          patterns: [
+            %r{/(?:users?|posts?|articles?|comments?|api/v\d+/\w+)/\d+\.(?:exe|bat|cmd|com|scr|vbs|jar|app|deb|rpm)$}i,  # Rails resources with executable extensions
+            %r{/(?:users?|posts?|articles?|comments?|api/v\d+/\w+)\.(?:asp|aspx|jsp|do|action|cgi|pl|py|rb)$}i,  # Rails routes with server-side script extensions
+            %r{\?format=(?:exe|bat|cmd|com|scr|vbs|jar|asp|aspx|jsp|php)$}i,  # Suspicious format in query params
+          ],
+          severity: :medium,
+          description: "Potential Rails exception triggering attempt"
+        },
+        ip_spoofing: {
+          patterns: [
+            %r{X-Forwarded-For.*X-Forwarded-For}i,  # Multiple X-Forwarded-For headers in path (suspicious)
+            %r{Client-IP.*X-Forwarded-For}i,  # Conflicting IP headers in path
+          ],
+          severity: :high,
+          description: "Potential IP spoofing attempt"
+        },
+        record_scanning: {
+          patterns: [
+            %r{/(?:user|admin|account|profile|order|payment|invoice|document|file|download)/\d{6,}}i,  # Large IDs that likely don't exist
+            %r{/(?:user|admin|account|profile)/(?:test|admin|root|administrator|superuser)}i,  # Common test usernames
+            %r{/api/v\d+/(?:users?|accounts?|orders?|payments?)/(?:999999|123456|0|null|undefined)}i,  # Obviously fake API IDs
+          ],
+          severity: :low,
+          description: "Potential record enumeration/scanning"
+        },
         wordpress: {
           patterns: [
             %r{/wp-admin}i,
@@ -92,6 +118,13 @@ module Beskar
         }
       }.freeze
 
+      # Configuration for RecordNotFound exclusion patterns
+      # These patterns will not trigger WAF violations
+      RECORD_NOT_FOUND_EXCLUSIONS = [
+        # Add default exclusions here if needed
+        # %r{/posts/.*},  # Example: exclude all posts paths
+      ].freeze
+
       class << self
         # Analyze a request for vulnerability scanning patterns
         def analyze_request(request)
@@ -128,6 +161,81 @@ module Beskar
           end
         end
 
+        # Analyze Rails exceptions as potential security threats
+        def analyze_exception(exception, request)
+          case exception
+          when ActionController::UnknownFormat
+            {
+              threat_detected: true,
+              patterns: [{
+                category: :unknown_format,
+                pattern: "ActionController::UnknownFormat",
+                severity: :medium,
+                description: "Unknown format requested - potential scanner",
+                matched_path: request.fullpath
+              }],
+              highest_severity: :medium,
+              ip_address: request.ip,
+              user_agent: request.user_agent,
+              timestamp: Time.current,
+              exception_class: exception.class.name,
+              exception_message: exception.message
+            }
+          when ActionDispatch::RemoteIp::IpSpoofAttackError
+            {
+              threat_detected: true,
+              patterns: [{
+                category: :ip_spoof,
+                pattern: "ActionDispatch::RemoteIp::IpSpoofAttackError",
+                severity: :critical,
+                description: "IP spoofing attack detected",
+                matched_path: request.fullpath
+              }],
+              highest_severity: :critical,
+              ip_address: request.ip,
+              user_agent: request.user_agent,
+              timestamp: Time.current,
+              exception_class: exception.class.name,
+              exception_message: exception.message
+            }
+          when ActiveRecord::RecordNotFound
+            # Check if this path should be excluded from WAF
+            if should_exclude_record_not_found?(request.fullpath)
+              return nil
+            end
+
+            {
+              threat_detected: true,
+              patterns: [{
+                category: :record_not_found,
+                pattern: "ActiveRecord::RecordNotFound",
+                severity: :low,
+                description: "Record not found - potential enumeration scan",
+                matched_path: request.fullpath
+              }],
+              highest_severity: :low,
+              ip_address: request.ip,
+              user_agent: request.user_agent,
+              timestamp: Time.current,
+              exception_class: exception.class.name,
+              exception_message: exception.message
+            }
+          else
+            nil
+          end
+        end
+
+        # Check if a RecordNotFound exception should be excluded from WAF
+        def should_exclude_record_not_found?(path)
+          return false if path.blank?
+
+          # Check configured exclusions
+          exclusions = waf_config[:record_not_found_exclusions] || []
+          all_exclusions = RECORD_NOT_FOUND_EXCLUSIONS + exclusions
+
+          all_exclusions.any? { |pattern| path.match?(pattern) }
+        end
+
         # Check if request should be blocked based on violation history
         def should_block?(ip_address)
           config = waf_config
@@ -146,14 +254,20 @@ module Beskar
           config = waf_config
           return unless config[:enabled]
 
+          Beskar::Logger.debug("[WAF] Recording violation for IP: #{ip_address}, whitelisted: #{whitelisted}", component: :WAF)
+
           # Increment violation count
           cache_key = "beskar:waf_violations:#{ip_address}"
           current_count = Rails.cache.read(cache_key) || 0
           new_count = current_count + 1
 
+          Beskar::Logger.debug("[WAF] Violation count for #{ip_address}: #{current_count} -> #{new_count}", component: :WAF)
+
           # Store with TTL from config (default 1 hour)
           ttl = config[:violation_window] || 1.hour
           Rails.cache.write(cache_key, new_count, expires_in: ttl)
+
+          Beskar::Logger.debug("[WAF] Cached violation count with TTL: #{ttl} seconds", component: :WAF)
 
           # Log the violation
           log_violation(ip_address, analysis_result, new_count)
@@ -166,7 +280,10 @@ module Beskar
           # Check if we should auto-block (skip if whitelisted, in monitor-only mode)
           threshold = config[:block_threshold] || 3
 
+          Beskar::Logger.debug("[WAF] Auto-block check: whitelisted=#{whitelisted}, auto_block=#{config[:auto_block]}, count=#{new_count}, threshold=#{threshold}", component: :WAF)
+
           if !whitelisted && config[:auto_block] && new_count >= threshold
+            Beskar::Logger.info("[WAF] Threshold reached for #{ip_address}, creating ban record", component: :WAF)
             # Always create the ban record (even in monitor-only mode)
             auto_block_ip(ip_address, analysis_result, new_count)
 
@@ -174,6 +291,8 @@ module Beskar
             if Beskar.configuration.monitor_only?
               log_monitor_only_action(ip_address, analysis_result, new_count, threshold)
             end
+          else
+            Beskar::Logger.debug("[WAF] Not auto-blocking: conditions not met", component: :WAF)
           end
 
           new_count

@@ -25,6 +25,7 @@ Built as a mountable Rails Engine, it leverages core framework features like Act
   end
 
   spec.add_dependency "rails", ">= 8.0.0"
+  spec.add_dependency "csv", "~> 3.0"
 
   # Optional: MaxMind DB reader for GeoIP functionality
   # Users need to provide their own GeoIP database due to licensing

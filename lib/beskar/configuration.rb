@@ -25,7 +25,8 @@ module Beskar
         violation_window: 1.hour,        # Time window to count violations
         block_durations: [ 1.hour, 6.hours, 24.hours, 7.days ], # Escalating block durations
         permanent_block_after: 5,        # Permanent block after N violations (nil = never)
-        create_security_events: true     # Create SecurityEvent records
+        create_security_events: true,    # Create SecurityEvent records
+        record_not_found_exclusions: []  # Regex patterns to exclude from RecordNotFound detection
       }
       @security_tracking = {
         enabled: true,

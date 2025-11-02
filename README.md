@@ -10,7 +10,7 @@
 -   **Brute Force Detection:** Advanced pattern recognition to detect single account attacks vs credential stuffing attempts, with automatic IP banning.
 -   **IP Whitelisting:** Allow trusted IPs (office networks, partners, security scanners) to bypass blocking while maintaining full audit logs. Supports individual IPs and CIDR notation.
 -   **Persistent IP Blocking:** Hybrid cache + database blocking system that survives application restarts. Auto-bans IPs after authentication abuse or excessive rate limiting violations.
--   **Web Application Firewall (WAF):** Real-time detection and blocking of vulnerability scanning attempts across 7 attack categories (WordPress, PHP admin panels, config files, path traversal, framework debug, CMS detection, common exploits). Includes escalating ban durations and monitor-only mode.
+-   **Web Application Firewall (WAF):** Real-time detection and blocking of vulnerability scanning attempts across 10 attack categories including Rails exception analysis (WordPress, PHP admin panels, config files, path traversal, framework debug, CMS detection, common exploits, UnknownFormat, IP spoofing, RecordNotFound enumeration). Includes escalating ban durations, monitor-only mode, and configurable exclusion patterns.
 -   **Security Event Tracking:** Comprehensive logging of authentication events with risk scoring and metadata extraction.
 -   **IP Geolocation:** MaxMind GeoLite2-City database integration for country/city location, coordinates, timezone, and enhanced risk scoring (configurable, database not included due to licensing).
 -   **Geographic Anomaly Detection:** Haversine-based impossible travel detection and location-based risk assessment.
@@ -54,7 +54,7 @@ bin/rails db:migrate
 
 By default, Beskar enables the **Web Application Firewall (WAF) in monitor-only mode**. This means:
 - ✅ Vulnerability scans are detected and logged
-- ✅ Security events are created for analysis  
+- ✅ Security events are created for analysis
 - ⚠️ No requests are blocked yet (safe to enable in production)
 
 After monitoring for 24-48 hours, review the logs and disable monitor-only mode to enable active blocking:
@@ -76,7 +76,7 @@ Include the `SecurityTrackable` concern in your Devise user model:
 # app/models/user.rb
 class User < ApplicationRecord
   include Beskar::SecurityTrackable
-  
+
   devise :database_authenticatable, :registerable,
          :recoverable, :rememberable, :validatable
   # ... other Devise modules
@@ -168,7 +168,7 @@ The security tracking system respects all configuration settings:
 
 - **`enabled: false`** - Completely disables all security event tracking
 - **`track_successful_logins: false`** - Stops tracking successful login events
-- **`track_failed_logins: false`** - Stops tracking failed login attempts  
+- **`track_failed_logins: false`** - Stops tracking failed login attempts
 - **`auto_analyze_patterns: false`** - Disables automatic threat pattern analysis
 
 When tracking is disabled via configuration, no `SecurityEvent` records are created and no background analysis jobs are queued.
@@ -184,7 +184,7 @@ Once installed and configured, Beskar works automatically with Devise. Add the `
 class User < ApplicationRecord
   devise :database_authenticatable, :registerable,
          :recoverable, :rememberable, :validatable
-  
+
   # Add Beskar security tracking
   include Beskar::Models::SecurityTrackable
 end
@@ -203,7 +203,7 @@ class User < ApplicationRecord
   devise :database_authenticatable, :registerable,
          :recoverable, :rememberable, :validatable,
          :lockable  # Add this for risk-based locking
-  
+
   include Beskar::Models::SecurityTrackable
 end
 ```
@@ -351,7 +351,7 @@ attack_type = rate_limiter.attack_pattern_type
 case attack_type
 when :brute_force_single_account
   # Single IP attacking one account
-when :distributed_single_account  
+when :distributed_single_account
   # Multiple IPs attacking one account
 when :single_ip_multiple_accounts
   # One IP attacking multiple accounts (credential stuffing)
@@ -394,7 +394,7 @@ Beskar::Services::IpWhitelist.clear_cache!
 
 ### Web Application Firewall (WAF)
 
-Beskar's WAF detects and blocks vulnerability scanning attempts across 7 attack categories:
+Beskar's WAF detects and blocks vulnerability scanning attempts across 10 attack categories:
 
 **Attack Categories Detected:**
 1. **WordPress Scans** (High Severity) - `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`
@@ -404,11 +404,14 @@ Beskar's WAF detects and blocks vulnerability scanning attempts across 7 attack 
 5. **Framework Debug** (Medium Severity) - `/rails/info/routes`, `/__debug__`, `/telescope`
 6. **CMS Detection** (Medium Severity) - `/joomla`, `/drupal`, `/magento`
 7. **Common Exploits** (Critical Severity) - `/shell.php`, `/c99.php`, `/webshell`
+8. **ActionController::UnknownFormat** (Medium Severity) - Detects requests for unusual formats like `/users/1.exe`, `/api/data.bat` that trigger Rails format exceptions, indicating potential scanning
+9. **ActionDispatch::RemoteIp::IpSpoofAttackError** (Critical Severity) - Detects IP spoofing attempts when conflicting IP headers are present
+10. **ActiveRecord::RecordNotFound** (Low Severity) - Detects potential record enumeration scans like `/admin/users/999999`, with configurable exclusions to prevent false positives
 
 **Configuration Examples:**
 
 ```ruby
-# Production - Aggressive protection
+# Production - Aggressive protection with Rails exception detection
 Beskar.configure do |config|
   config.waf = {
     enabled: true,
@@ -417,7 +420,14 @@ Beskar.configure do |config|
     violation_window: 30.minutes,
     block_durations: [6.hours, 24.hours, 7.days, 30.days],
     permanent_block_after: 4,
-    create_security_events: true
+    create_security_events: true,
+
+    # Exclude certain paths from RecordNotFound detection to prevent false positives
+    record_not_found_exclusions: [
+      %r{/posts/.*},                # Don't flag missing blog posts as scanning
+      %r{/articles/\d+},            # Don't flag missing articles
+      %r{/public/.*}                # Ignore public content paths
+    ]
   }
 end
 
@@ -428,7 +438,7 @@ Beskar.configure do |config|
     monitor_only: true,              # Log but never block
     create_security_events: true
   }
-  
+
   config.ip_whitelist = ["127.0.0.1", "::1"]  # Whitelist localhost
 end
 ```
@@ -439,6 +449,8 @@ end
 - **Repeat violations**: Ban duration escalates: 1h → 6h → 24h → 7d → **permanent**
 - **Permanent block**: After 5 violations (configurable), IP is permanently banned
 - **Monitor mode**: Logs all violations but never blocks (useful for tuning)
+- **Exception-based violations**: Rails exceptions (UnknownFormat, RecordNotFound, IP spoofing) count toward the same threshold
+- **Mixed violations**: Regular WAF patterns and exception detections accumulate together
 
 **Check WAF status:**
 ```ruby
@@ -574,10 +586,10 @@ class SecurityCleanupJob < ApplicationJob
     # Remove expired bans from database
     removed = Beskar::BannedIp.cleanup_expired!
     Rails.logger.info "Cleaned up #{removed} expired IP bans"
-    
+
     # Archive old security events (optional)
     Beskar::SecurityEvent.where('created_at < ?', 90.days.ago).delete_all
-    
+
     # Generate security report (example)
     report = {
       active_bans: Beskar::BannedIp.active.count,
@@ -587,7 +599,7 @@ class SecurityCleanupJob < ApplicationJob
         created_at: 24.hours.ago..Time.current
       ).count
     }
-    
+
     # Send to monitoring service
     Rails.logger.info "Security Report: #{report}"
   end
@@ -853,7 +865,7 @@ $ bin/rails test
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at [https://github.com/prograis/beskar](https://github.com/prograils/beskar). 
+Bug reports and pull requests are welcome on GitHub at [https://github.com/prograis/beskar](https://github.com/prograils/beskar).
 
 ## License
 
@@ -862,4 +874,3 @@ The gem is available as open source under the terms of the [MIT License](https:/
 ## Code of Conduct
 
 Just be nice to each other.
-

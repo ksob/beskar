@@ -17,7 +17,21 @@ Beskar.configure do |config|
     violation_window: 1.hour,             # Time window for counting violations
     block_durations: [1.hour, 6.hours, 24.hours, 7.days], # Escalating ban durations
     permanent_block_after: 5,             # Permanent ban after N violations (nil = never)
-    create_security_events: true          # Log violations to SecurityEvent table
+    create_security_events: true,         # Log violations to SecurityEvent table
+
+    # Rails Exception Detection - NEW FEATURE
+    # Detects potential scanning through Rails exceptions:
+    # - ActionController::UnknownFormat (e.g., /users/1.exe)
+    # - ActionDispatch::RemoteIp::IpSpoofAttackError (IP spoofing attempts)
+    # - ActiveRecord::RecordNotFound (record enumeration scans)
+
+    # Exclude certain paths from RecordNotFound detection to avoid false positives
+    # Example: Exclude all post URLs from triggering WAF on 404s
+    record_not_found_exclusions: [
+      # %r{/posts/.*},                  # Don't flag missing posts as scanning
+      # %r{/articles/\d+},              # Don't flag missing articles
+      # %r{/public/.*},                 # Ignore public content paths
+    ]
   }
 
   # After monitoring for 24-48 hours, review logs and disable monitor_only:
@@ -25,6 +39,13 @@ Beskar.configure do |config|
 
   # View WAF activity in logs:
   # tail -f log/production.log | grep "Beskar::WAF"
+
+  # The WAF now detects:
+  # - Traditional vulnerability scans (WordPress, phpMyAdmin, etc.)
+  # - Rails-specific attacks via exceptions:
+  #   * Unknown format requests (potential scanners testing endpoints)
+  #   * IP spoofing attempts (conflicting IP headers)
+  #   * Record enumeration (testing non-existent IDs)
 
   # Query violations that would be blocked:
   # Beskar::SecurityEvent.where(event_type: 'waf_violation')

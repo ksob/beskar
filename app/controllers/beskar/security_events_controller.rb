@@ -1,7 +1,9 @@
+require 'csv'
+
 module Beskar
   class SecurityEventsController < ApplicationController
     def index
-      @events = Beskar::SecurityEvent.includes(:user).order(created_at: :desc)
+      @events = Beskar::SecurityEvent.preload(:user).order(created_at: :desc)
 
       # Apply filters
       apply_filters!
@@ -38,7 +40,7 @@ module Beskar
     end
 
     def export
-      @events = Beskar::SecurityEvent.includes(:user)
+      @events = Beskar::SecurityEvent.preload(:user)
 
       # Apply same filters as index
       apply_filters!
@@ -84,12 +86,13 @@ module Beskar
 
       # Filter by IP address
       if params[:ip_address].present?
-        @events = @events.where(ip_address: params[:ip_address])
+        @events = @events.where("ip_address LIKE ?", "%#{params[:ip_address]}%")
       end
 
       # Filter by user email (if attempted_email is stored)
       if params[:email].present?
-        @events = @events.where("attempted_email LIKE ? OR metadata->>'attempted_email' LIKE ?",
+        # Search in attempted_email column and metadata (avoid joining polymorphic)
+        @events = @events.where("attempted_email LIKE ? OR metadata LIKE ?",
                                "%#{params[:email]}%", "%#{params[:email]}%")
       end
 
@@ -138,10 +141,20 @@ module Beskar
       # Search in metadata
       if params[:search].present?
         search_term = "%#{params[:search]}%"
-        @events = @events.where(
-          "ip_address LIKE ? OR user_agent LIKE ? OR attempted_email LIKE ? OR metadata::text LIKE ?",
-          search_term, search_term, search_term, search_term
-        )
+        # Use database-agnostic approach for metadata search
+        if ActiveRecord::Base.connection.adapter_name == 'PostgreSQL'
+          @events = @events.where(
+            "ip_address LIKE ? OR user_agent LIKE ? OR attempted_email LIKE ? OR metadata::text LIKE ?",
+            search_term, search_term, search_term, search_term
+          )
+        else
+          # For SQLite and other databases, search in regular columns
+          # SQLite's JSON support varies by version, so we'll search in standard columns
+          @events = @events.where(
+            "ip_address LIKE ? OR user_agent LIKE ? OR attempted_email LIKE ? OR event_type LIKE ?",
+            search_term, search_term, search_term, search_term
+          )
+        end
       end
     end
 

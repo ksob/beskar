@@ -19,10 +19,15 @@ module Beskar
       # If custom authentication is configured, use it
       if Beskar.configuration.authenticate_admin.present?
         begin
-          instance_exec(&Beskar.configuration.authenticate_admin)
+          result = Beskar.configuration.authenticate_admin.call(request)
+          unless result
+            handle_authentication_failure
+            return false
+          end
         rescue => e
           Rails.logger.error "Beskar authentication error: #{e.message}"
           handle_authentication_failure
+          return false
         end
       else
         # Default behavior: allow in development, require configuration in production
@@ -42,7 +47,9 @@ module Beskar
 
     def handle_authentication_failure
       respond_to do |format|
-        format.html { redirect_to main_app.root_path, alert: "Not authorized to access the security dashboard" }
+        format.html {
+          render plain: "Unauthorized access to Beskar dashboard", status: :unauthorized
+        }
         format.json { render json: { error: "Unauthorized" }, status: :unauthorized }
       end
     end
@@ -95,11 +102,18 @@ module Beskar
 
     # Pagination helper
     def paginate(collection, per_page: 25)
+      # Handle per_page from params if provided
+      if params[:per_page].present?
+        per_page = params[:per_page].to_i
+        per_page = 25 if per_page <= 0  # Default if invalid
+        per_page = 100 if per_page > 100  # Max limit
+      end
+
       page = (params[:page] || 1).to_i
       page = 1 if page < 1
 
       total_count = collection.count
-      total_pages = (total_count.to_f / per_page).ceil
+      total_pages = total_count > 0 ? (total_count.to_f / per_page).ceil : 0
 
       offset = (page - 1) * per_page
       records = collection.limit(per_page).offset(offset)

@@ -1,3 +1,5 @@
+require 'csv'
+
 module Beskar
   class BannedIpsController < ApplicationController
     before_action :set_banned_ip, only: [:show, :edit, :update, :destroy, :extend]
@@ -41,17 +43,14 @@ module Beskar
     end
 
     def create
-      @banned_ip = Beskar::BannedIp.new(banned_ip_params)
-      @banned_ip.banned_at ||= Time.current
+      manager = BannedIpManager.new(create_params)
+      manager.create
 
-      if @banned_ip.save
-        # Update cache
-        Rails.cache.write("beskar:banned_ip:#{@banned_ip.ip_address}", true,
-                         expires_in: @banned_ip.permanent? ? nil : (@banned_ip.expires_at - Time.current))
-
-        redirect_to banned_ip_path(@banned_ip),
-                    notice: "IP address #{@banned_ip.ip_address} has been banned successfully."
+      if manager.success?
+        redirect_to banned_ip_path(manager.banned_ip),
+                    notice: "IP address #{manager.banned_ip.ip_address} has been banned successfully."
       else
+        @banned_ip = manager.banned_ip
         render :new
       end
     end
@@ -61,14 +60,6 @@ module Beskar
 
     def update
       if @banned_ip.update(banned_ip_params)
-        # Update cache
-        if @banned_ip.active?
-          ttl = @banned_ip.permanent? ? nil : (@banned_ip.expires_at - Time.current)
-          Rails.cache.write("beskar:banned_ip:#{@banned_ip.ip_address}", true, expires_in: ttl)
-        else
-          Rails.cache.delete("beskar:banned_ip:#{@banned_ip.ip_address}")
-        end
-
         redirect_to banned_ip_path(@banned_ip),
                     notice: "Ban for IP #{@banned_ip.ip_address} has been updated."
       else
@@ -79,9 +70,6 @@ module Beskar
     def destroy
       ip_address = @banned_ip.ip_address
       @banned_ip.destroy
-
-      # Clear cache
-      Rails.cache.delete("beskar:banned_ip:#{ip_address}")
 
       redirect_to banned_ips_path,
                   notice: "IP address #{ip_address} has been unbanned."
@@ -171,6 +159,13 @@ module Beskar
       )
     end
 
+    def create_params
+      banned_ip_params.to_h.merge(
+        ban_type: params[:ban_type],
+        duration: params[:duration]
+      ).symbolize_keys
+    end
+
     def apply_filters!
       # Filter by status
       case params[:status]
@@ -217,17 +212,12 @@ module Beskar
     def unban_selected
       if params[:ip_ids].present?
         banned_ips = Beskar::BannedIp.where(id: params[:ip_ids])
-        ip_addresses = banned_ips.pluck(:ip_address)
+        count = banned_ips.count
 
         banned_ips.destroy_all
 
-        # Clear cache for all unbanned IPs
-        ip_addresses.each do |ip|
-          Rails.cache.delete("beskar:banned_ip:#{ip}")
-        end
-
         redirect_to banned_ips_path,
-                    notice: "#{ip_addresses.count} IP(s) have been unbanned."
+                    notice: "#{count} IP(s) have been unbanned."
       else
         redirect_to banned_ips_path, alert: "No IPs selected."
       end
