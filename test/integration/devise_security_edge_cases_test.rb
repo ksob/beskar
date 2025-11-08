@@ -84,7 +84,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
     event = Beskar::SecurityEvent.where(
       attempted_email: test_email,
       ip_address: ip
-    ).last
+    ).order(id: :desc).first
 
     assert_not_nil event, "Should create security event for valid email"
     assert_equal "login_failure", event.event_type
@@ -108,7 +108,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_content
 
     # Should still create security event but handle long email gracefully
-    event = Beskar::SecurityEvent.where(ip_address: worker_ip(30)).last
+    event = Beskar::SecurityEvent.where(ip_address: worker_ip(30)).order(id: :desc).first
     assert_not_nil event, "SecurityEvent should be created for long email attempt"
     # The attempted_email should be stored (possibly truncated)
     assert_not_nil event.attempted_email, "Email should be stored in attempted_email field"
@@ -143,7 +143,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
       assert_response :unprocessable_content, "Failed for #{test_case[:description]}"
 
       # Should create security event that handles special characters
-      event = Beskar::SecurityEvent.where(ip_address: worker_ip(40 + index)).last
+      event = Beskar::SecurityEvent.where(ip_address: worker_ip(40 + index)).order(id: :desc).first
       assert_not_nil event, "Should create security event for #{test_case[:description]}"
       assert_not_nil event.attempted_email, "Event should track attempted email"
       assert_not_nil event.metadata, "Event should have metadata"
@@ -172,7 +172,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
       assert_response :unprocessable_content, "Failed for #{test_case[:description]}"
 
       # Should create security event with available data
-      event = Beskar::SecurityEvent.where(attempted_email: "header#{index}@example.com").last
+      event = Beskar::SecurityEvent.where(attempted_email: "header#{index}@example.com").order(id: :desc).first
       assert_not_nil event, "Should create security event for #{test_case[:description]}"
       assert_equal "login_failure", event.event_type
       # Should capture some IP address (might be localhost for missing headers)
@@ -285,7 +285,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_content
 
     # Should create security event and flag as suspicious
-    event = Beskar::SecurityEvent.where(ip_address: worker_ip(24)).last
+    event = Beskar::SecurityEvent.where(ip_address: worker_ip(24)).order(id: :desc).first
     assert_not_nil event, "Should create security event for suspicious parameters"
     assert event.risk_score >= 10,
       "Suspicious parameters should have elevated risk score (got #{event.risk_score})"
@@ -322,7 +322,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
     assert_select "form" # Login form should be present
 
     # Should create security event for the failed attempt
-    event = Beskar::SecurityEvent.where(ip_address: ip).last
+    event = Beskar::SecurityEvent.where(ip_address: ip).order(id: :desc).first
     assert_equal "login_failure", event.event_type
   end
 
@@ -351,7 +351,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
       assert_response :unprocessable_content
 
       # Should create security event with elevated risk for suspicious referrer
-      event = Beskar::SecurityEvent.where(ip_address: ip).last
+      event = Beskar::SecurityEvent.where(ip_address: ip).order(id: :desc).first
       assert event.risk_score >= 10, "Suspicious referrer should have some risk score"
       assert_equal referrer, event.metadata["referer"]
     end
@@ -383,7 +383,9 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
       # Devise returns 422 for invalid parameters but still shows the form
       assert_response :unprocessable_content
 
-      event = Beskar::SecurityEvent.where(attempted_email: "spoof#{index}@example.com").last
+      # Explicitly order by id DESC to ensure we get the most recent event
+      # .last without explicit ordering can be flaky in parallel test execution
+      event = Beskar::SecurityEvent.where(attempted_email: "spoof#{index}@example.com").order(id: :desc).first
       # Should record IP address
       assert_not_nil event.ip_address
       assert event.risk_score >= 30
