@@ -71,35 +71,52 @@ module Beskar
     class << self
       # Ban an IP address
       def ban!(ip_address, reason:, duration: nil, permanent: false, details: nil, metadata: {})
-        banned_ip = find_or_initialize_by(ip_address: ip_address)
-        
-        if banned_ip.persisted?
-          # Existing ban - extend it
-          banned_ip.extend_ban!(duration)
-          banned_ip.details = details if details
-          # Deep stringify keys to avoid duplicate key issues
-          if metadata.any?
-            banned_ip.metadata = banned_ip.metadata.deep_stringify_keys.merge(metadata.deep_stringify_keys)
+        # Retry logic to handle race conditions when multiple requests try to ban the same IP
+        retries = 0
+        max_retries = 2
+
+        begin
+          banned_ip = find_or_initialize_by(ip_address: ip_address)
+
+          if banned_ip.persisted?
+            # Existing ban - extend it
+            banned_ip.extend_ban!(duration)
+            banned_ip.details = details if details
+            # Deep stringify keys to avoid duplicate key issues
+            if metadata.any?
+              banned_ip.metadata = banned_ip.metadata.deep_stringify_keys.merge(metadata.deep_stringify_keys)
+            end
+            banned_ip.save!
+          else
+            # New ban
+            banned_ip.assign_attributes(
+              reason: reason,
+              banned_at: Time.current,
+              expires_at: permanent ? nil : (Time.current + (duration || 1.hour)),
+              permanent: permanent,
+              details: details,
+              metadata: metadata
+            )
+            banned_ip.save!
           end
-          banned_ip.save!
-        else
-          # New ban
-          banned_ip.assign_attributes(
-            reason: reason,
-            banned_at: Time.current,
-            expires_at: permanent ? nil : (Time.current + (duration || 1.hour)),
-            permanent: permanent,
-            details: details,
-            metadata: metadata
-          )
-          banned_ip.save!
+
+          # Update cache
+          cache_key = "beskar:banned_ip:#{ip_address}"
+          Rails.cache.write(cache_key, true, expires_in: permanent ? nil : (duration || 1.hour))
+
+          banned_ip
+        rescue ActiveRecord::RecordInvalid => e
+          # Race condition: another request created the record between find and save
+          if e.message.include?("Ip address has already been taken") && retries < max_retries
+            retries += 1
+            # Small random delay to reduce contention (1-10ms)
+            sleep(rand(1..10) / 1000.0)
+            retry
+          else
+            # Re-raise if it's a different validation error or we've exceeded retries
+            raise
+          end
         end
-
-        # Update cache
-        cache_key = "beskar:banned_ip:#{ip_address}"
-        Rails.cache.write(cache_key, true, expires_in: permanent ? nil : (duration || 1.hour))
-
-        banned_ip
       end
 
       # Check if an IP is banned (cache-first approach)

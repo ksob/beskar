@@ -308,12 +308,75 @@ class BannedIpTest < ActiveSupport::TestCase
 
   test "ban! updates cache" do
     ip = "10.0.0.54"
-    
+
     Beskar::BannedIp.ban!(ip, reason: "test", duration: 1.hour)
-    
+
     # Cache should be set
     cache_key = "beskar:banned_ip:#{ip}"
     assert Rails.cache.read(cache_key)
+  end
+
+  test "ban! handles race condition when multiple threads ban same IP simultaneously" do
+    ip = "10.0.0.55"
+    results = []
+    errors = []
+
+    # Simulate race condition with actual threads
+    threads = 3.times.map do |i|
+      Thread.new do
+        begin
+          result = Beskar::BannedIp.ban!(
+            ip,
+            reason: "thread_#{i}",
+            duration: 1.hour
+          )
+          results << result
+        rescue => e
+          errors << e
+        end
+      end
+    end
+
+    # Wait for all threads to complete
+    threads.each(&:join)
+
+    # All threads should succeed (no errors due to race condition)
+    assert errors.empty?, "Expected no errors, but got: #{errors.map(&:message)}"
+    assert_equal 3, results.size
+
+    # Should only have one record for this IP (all threads updated the same record)
+    assert_equal 1, Beskar::BannedIp.where(ip_address: ip).count
+
+    # Violation count should be 3 (initial + 2 extensions)
+    ban = Beskar::BannedIp.find_by(ip_address: ip)
+    assert_equal 3, ban.violation_count
+  end
+
+  test "ban! handles concurrent bans for different IPs without issues" do
+    results = []
+    errors = []
+
+    # Create concurrent bans for different IPs
+    threads = 5.times.map do |i|
+      Thread.new do
+        begin
+          ip = "10.0.0.#{60 + i}"
+          result = Beskar::BannedIp.ban!(ip, reason: "concurrent_test", duration: 1.hour)
+          results << result
+        rescue => e
+          errors << e
+        end
+      end
+    end
+
+    threads.each(&:join)
+
+    # All threads should succeed
+    assert errors.empty?, "Expected no errors, but got: #{errors.map(&:message)}"
+    assert_equal 5, results.size
+
+    # Should have 5 distinct records
+    assert_equal 5, Beskar::BannedIp.where("ip_address LIKE '10.0.0.6%'").count
   end
 
   # Class methods - banned?
