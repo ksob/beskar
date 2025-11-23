@@ -10,9 +10,17 @@ class MiddlewareBlockingTest < ActionDispatch::IntegrationTest
     Beskar.configuration.waf = {
       enabled: true,
       auto_block: true,
-      block_threshold: 3,
-      violation_window: 1.hour,
-      create_security_events: true
+      score_threshold: 150,
+      violation_window: 6.hours,
+      create_security_events: true,
+      decay_enabled: true,
+      decay_rates: {
+        critical: 360,
+        high: 120,
+        medium: 45,
+        low: 15
+      },
+      max_violations_tracked: 50
     }
 
     # Configure IP whitelist
@@ -177,7 +185,10 @@ class MiddlewareBlockingTest < ActionDispatch::IntegrationTest
       get path, headers: { "X-Forwarded-For" => ip }
     end
 
-    assert Beskar::Services::Waf.get_violation_count(ip) >= 3
+    # Config files are critical (95 points), 2 violations = 190 > 150 threshold
+    # IP gets banned after 2nd violation, so we'll have 2 violations tracked
+    assert Beskar::Services::Waf.get_violation_count(ip) >= 2, "Expected at least 2 violations"
+    assert Beskar::BannedIp.banned?(ip), "IP should be banned after config file access attempts"
   end
 
   test "WAF detects path traversal attempts" do

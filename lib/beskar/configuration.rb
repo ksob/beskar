@@ -21,12 +21,20 @@ module Beskar
       @waf = {
         enabled: false,                  # Master switch for WAF
         auto_block: true,                # Automatically block IPs after threshold
-        block_threshold: 3,              # Number of violations before blocking
-        violation_window: 1.hour,        # Time window to count violations
-        block_durations: [ 1.hour, 6.hours, 24.hours, 7.days ], # Escalating block durations
-        permanent_block_after: 5,        # Permanent block after N violations (nil = never)
+        score_threshold: 150,            # Cumulative risk score before blocking (replaces block_threshold)
+        violation_window: 6.hours,       # Maximum time window to track violations
+        block_durations: [1.hour, 6.hours, 24.hours, 7.days], # Escalating block durations
+        permanent_block_after: 500,      # Permanent block after cumulative score reaches this (nil = never)
         create_security_events: true,    # Create SecurityEvent records
-        record_not_found_exclusions: []  # Regex patterns to exclude from RecordNotFound detection
+        record_not_found_exclusions: [], # Regex patterns to exclude from RecordNotFound detection
+        decay_enabled: true,             # Enable exponential decay of violation scores over time
+        decay_rates: {                   # Decay rates by severity (half-life in minutes)
+          critical: 360,                 # Critical violations: 6 hour half-life
+          high: 120,                     # High violations: 2 hour half-life
+          medium: 45,                    # Medium violations: 45 minute half-life
+          low: 15                        # Low violations: 15 minute half-life
+        },
+        max_violations_tracked: 50       # Maximum number of violations to track per IP (oldest pruned)
       }
       @security_tracking = {
         enabled: true,

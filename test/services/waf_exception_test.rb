@@ -112,8 +112,8 @@ class WafExceptionTest < ActiveSupport::TestCase
 
     # Record the violation
     assert_difference 'Beskar::SecurityEvent.count', 1 do
-      violation_count = Beskar::Services::Waf.record_violation("192.168.1.100", analysis)
-      assert_equal 1, violation_count
+      current_score = Beskar::Services::Waf.record_violation("192.168.1.100", analysis)
+      assert_equal 60, current_score.round # medium severity = 60 points
     end
 
     # Check the security event was created correctly
@@ -151,8 +151,8 @@ class WafExceptionTest < ActiveSupport::TestCase
 
     # Record the violation
     assert_difference 'Beskar::SecurityEvent.count', 1 do
-      violation_count = Beskar::Services::Waf.record_violation("192.168.1.100", analysis)
-      assert_equal 1, violation_count
+      current_score = Beskar::Services::Waf.record_violation("192.168.1.100", analysis)
+      assert_equal 60, current_score.round # medium severity = 60 points
     end
 
     # Check the security event was created correctly

@@ -69,19 +69,44 @@ Beskar.configure do |config|
   ]
 
   # ============================================================================
-  # WAF (WEB APPLICATION FIREWALL)
+  # WAF (WEB APPLICATION FIREWALL) - Score-Based Blocking
   # ============================================================================
-  # Enable WAF to protect against common attacks (XSS, SQL injection, etc.)
+  # Enable WAF to protect against common attacks and vulnerability scans.
+  # Uses score-based blocking with exponential decay for intelligent threat detection.
   config.waf[:enabled] = true
 
   # Optionally customize WAF settings (these are the defaults):
-  # config.waf[:auto_block] = true                # Automatically block IPs after threshold
-  # config.waf[:block_threshold] = 3              # Number of violations before blocking
-  # config.waf[:violation_window] = 1.hour        # Time window to count violations
+  # config.waf[:auto_block] = true                 # Automatically block IPs after threshold
+  # config.waf[:score_threshold] = 150             # Cumulative risk score before blocking
+  # config.waf[:violation_window] = 6.hours        # Maximum time window to track violations
   # config.waf[:block_durations] = [1.hour, 6.hours, 24.hours, 7.days] # Escalating durations
-  # config.waf[:permanent_block_after] = 5        # Permanent block after N violations
-  # config.waf[:create_security_events] = true    # Create SecurityEvent records
-  # config.waf[:record_not_found_exclusions] = [] # Regex patterns to exclude from RecordNotFound detection
+  # config.waf[:permanent_block_after] = 500       # Permanent block when cumulative score reaches this
+  # config.waf[:create_security_events] = true     # Create SecurityEvent records
+  #
+  # === Exponential Decay Configuration ===
+  # Violations decay over time based on severity (reduces false positives)
+  # config.waf[:decay_enabled] = true
+  # config.waf[:decay_rates] = {                   # Half-life in minutes
+  #   critical: 360,  # 6 hour half-life (config files, path traversal)
+  #   high: 120,      # 2 hour half-life (WordPress, PHP admin scans)
+  #   medium: 45,     # 45 minute half-life (unknown formats)
+  #   low: 15         # 15 minute half-life (RecordNotFound/404s)
+  # }
+  # config.waf[:max_violations_tracked] = 50       # Maximum violations to track per IP
+  #
+  # === RecordNotFound Exclusions ===
+  # Exclude legitimate 404-prone paths from triggering violations
+  # config.waf[:record_not_found_exclusions] = [
+  #   %r{/posts/.*},              # Blog posts with slugs
+  #   %r{/products/[\w-]+},       # Product URLs with slugs
+  #   %r{/public/.*}              # Public content
+  # ]
+  #
+  # === Pre-configured Profiles ===
+  # See WAF_CONFIGURATION_PROFILES.md for complete profile examples:
+  # - STRICT: score_threshold = 100 (high-security)
+  # - BALANCED: score_threshold = 150 (recommended default)
+  # - PERMISSIVE: score_threshold = 200 (high-traffic sites)
 
   # ============================================================================
   # SECURITY TRACKING

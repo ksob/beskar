@@ -16,9 +16,17 @@ class WafExceptionIntegrationTest < ActionDispatch::IntegrationTest
     Beskar.configuration.waf = {
       enabled: true,
       auto_block: true,
-      block_threshold: 3,
-      violation_window: 1.hour,
+      score_threshold: 150,
+      violation_window: 6.hours,
       create_security_events: true,
+      decay_enabled: true,
+      decay_rates: {
+        critical: 360,
+        high: 120,
+        medium: 45,
+        low: 15
+      },
+      max_violations_tracked: 50,
       record_not_found_exclusions: [
         %r{/posts/.*},
         %r{/articles/\d+}

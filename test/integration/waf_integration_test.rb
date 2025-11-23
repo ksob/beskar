@@ -11,11 +11,19 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
     Beskar.configuration.waf = {
       enabled: true,
       auto_block: true,
-      block_threshold: 3,
-      violation_window: 1.hour,
+      score_threshold: 150,
+      violation_window: 6.hours,
       block_durations: [1.hour, 6.hours, 24.hours, 7.days],
-      permanent_block_after: 5,
-      create_security_events: true
+      permanent_block_after: 500,
+      create_security_events: true,
+      decay_enabled: true,
+      decay_rates: {
+        critical: 360,
+        high: 120,
+        medium: 45,
+        low: 15
+      },
+      max_violations_tracked: 50
     }
     Beskar.configuration.monitor_only = false
 
@@ -30,14 +38,14 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   # Progressive blocking scenarios
-  test "WAF blocks IP after threshold violations" do
+  test "WAF blocks IP after score threshold reached" do
     ip = worker_ip(1)
 
-    # First 2 violations - should not block yet
-    2.times { get "/wp-admin/", headers: { "X-Forwarded-For" => ip } }
+    # First violation - should not block yet (80 < 150)
+    get "/wp-admin/", headers: { "X-Forwarded-For" => ip }
     assert_not Beskar::BannedIp.banned?(ip)
 
-    # Third violation - should trigger block
+    # Second violation - should trigger block (80 + 80 = 160 > 150)
     get "/wp-admin/", headers: { "X-Forwarded-For" => ip }
 
     ban = Beskar::BannedIp.find_by(ip_address: ip)
@@ -89,7 +97,9 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
   test "WAF security events track multiple violations" do
     ip = worker_ip(11)
 
-    paths = ["/wp-admin/", "/.env", "/etc/passwd"]
+    # Use lower severity violations to avoid hitting ban threshold
+    # Medium severity (/debug) = 60 points each, need 3 to exceed 150
+    paths = ["/debug", "/telescope", "/__debug__"]
 
     assert_difference 'Beskar::SecurityEvent.count', 3 do
       paths.each do |path|
@@ -195,12 +205,12 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
       get path, headers: { "X-Forwarded-For" => ip }
     end
 
-    # Should have many critical violations
+    # Should have tracked multiple violations (6 config file attempts)
     violation_count = Beskar::Services::Waf.get_violation_count(ip)
-    assert violation_count >= 3
+    assert violation_count >= 2, "Expected at least 2 violations, got #{violation_count}"
 
-    # Should be blocked
-    assert Beskar::BannedIp.banned?(ip)
+    # Should be blocked (critical = 95 points, 2 violations = 190 > 150 threshold)
+    assert Beskar::BannedIp.banned?(ip), "IP should be banned after config file enumeration"
   end
 
   test "detects path traversal enumeration attack" do
@@ -217,8 +227,9 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
       get path, headers: { "X-Forwarded-For" => ip }
     end
 
-    assert Beskar::Services::Waf.get_violation_count(ip) >= 3
-    assert Beskar::BannedIp.banned?(ip)
+    # Path traversal is critical (95 points), 2 violations = 190 > 150 threshold
+    assert Beskar::Services::Waf.get_violation_count(ip) >= 2, "Expected at least 2 violations"
+    assert Beskar::BannedIp.banned?(ip), "IP should be banned after path traversal attempts"
   end
 
   # Monitor-only mode
@@ -286,10 +297,13 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
 
     threads.each(&:join)
 
-    # Should eventually be banned
-    # (exact count depends on race conditions, but should be >= threshold)
+    # Should track multiple violations
+    # (exact count depends on race conditions, but should be >= 2)
     violation_count = Beskar::Services::Waf.get_violation_count(ip)
-    assert violation_count >= 3
+    assert violation_count >= 2, "Expected at least 2 violations from concurrent requests, got #{violation_count}"
+
+    # Should be banned (80 points * multiple violations > 150 threshold)
+    assert Beskar::BannedIp.banned?(ip), "IP should be banned after concurrent violations"
   end
 
   # Case sensitivity
@@ -430,7 +444,9 @@ class WafIntegrationTest < ActionDispatch::IntegrationTest
       get path, headers: { "X-Forwarded-For" => ip }
     end
 
-    # All should be detected
-    assert Beskar::Services::Waf.get_violation_count(ip) >= 3
+    # WordPress is high severity (80 points), 2 violations = 160 > 150 threshold
+    # So we'll have 2 violations tracked before ban
+    assert Beskar::Services::Waf.get_violation_count(ip) >= 2, "Expected at least 2 violations"
+    assert Beskar::BannedIp.banned?(ip), "IP should be banned after multiple WordPress scan attempts"
   end
 end

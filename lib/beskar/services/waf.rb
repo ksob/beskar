@@ -259,11 +259,11 @@ module Beskar
           return false unless config[:enabled]
           return false unless config[:auto_block]
 
-          # Check violation count in cache
-          violation_count = get_violation_count(ip_address)
-          threshold = config[:block_threshold] || 3
+          # Get current risk score (with decay applied)
+          current_score = get_current_score(ip_address)
+          threshold = config[:score_threshold] || 150
 
-          violation_count >= threshold
+          current_score >= threshold
         end
 
         # Record a WAF violation
@@ -273,52 +273,81 @@ module Beskar
 
           Beskar::Logger.debug("[WAF] Recording violation for IP: #{ip_address}, whitelisted: #{whitelisted}", component: :WAF)
 
-          # Increment violation count
+          # Get current violations and add new one
           cache_key = "beskar:waf_violations:#{ip_address}"
-          current_count = Rails.cache.read(cache_key) || 0
-          new_count = current_count + 1
+          violations = Rails.cache.read(cache_key) || []
 
-          Beskar::Logger.debug("[WAF] Violation count for #{ip_address}: #{current_count} -> #{new_count}", component: :WAF)
+          # Calculate risk score for this violation
+          risk_score = severity_to_risk_score(analysis_result[:highest_severity])
 
-          # Store with TTL from config (default 1 hour)
-          ttl = config[:violation_window] || 1.hour
-          Rails.cache.write(cache_key, new_count, expires_in: ttl)
+          # Create new violation record
+          new_violation = {
+            timestamp: Time.current.to_i,
+            score: risk_score,
+            severity: analysis_result[:highest_severity],
+            category: analysis_result[:patterns].first[:category],
+            description: analysis_result[:patterns].first[:description],
+            path: analysis_result[:patterns].first[:matched_path]
+          }
 
-          Beskar::Logger.debug("[WAF] Cached violation count with TTL: #{ttl} seconds", component: :WAF)
+          violations << new_violation
+
+          # Prune old violations (outside violation window and max tracked)
+          violations = prune_violations(violations, config)
+
+          # Calculate current score with decay
+          current_score = calculate_current_score(violations, config)
+
+          Beskar::Logger.debug("[WAF] Violation recorded for #{ip_address}: score=#{risk_score}, current_total=#{current_score.round(2)}, violations_count=#{violations.size}", component: :WAF)
+
+          # Store violations with TTL from config
+          ttl = config[:violation_window] || 6.hours
+          Rails.cache.write(cache_key, violations, expires_in: ttl)
 
           # Log the violation
-          log_violation(ip_address, analysis_result, new_count)
+          log_violation(ip_address, analysis_result, current_score, violations.size)
 
           # Create security event if configured
           if config[:create_security_events]
-            create_security_event(ip_address, analysis_result)
+            create_security_event(ip_address, analysis_result, current_score)
           end
 
-          # Check if we should auto-block (skip if whitelisted, in monitor-only mode)
-          threshold = config[:block_threshold] || 3
+          # Check if we should auto-block (skip if whitelisted)
+          threshold = config[:score_threshold] || 150
 
-          Beskar::Logger.debug("[WAF] Auto-block check: whitelisted=#{whitelisted}, auto_block=#{config[:auto_block]}, count=#{new_count}, threshold=#{threshold}", component: :WAF)
+          Beskar::Logger.debug("[WAF] Auto-block check: whitelisted=#{whitelisted}, auto_block=#{config[:auto_block]}, score=#{current_score.round(2)}, threshold=#{threshold}", component: :WAF)
 
-          if !whitelisted && config[:auto_block] && new_count >= threshold
-            Beskar::Logger.info("[WAF] Threshold reached for #{ip_address}, creating ban record", component: :WAF)
+          if !whitelisted && config[:auto_block] && current_score >= threshold
+            Beskar::Logger.info("[WAF] Score threshold reached for #{ip_address}, creating ban record", component: :WAF)
             # Always create the ban record (even in monitor-only mode)
-            auto_block_ip(ip_address, analysis_result, new_count)
+            auto_block_ip(ip_address, analysis_result, current_score)
 
             # But also log monitor-only message if in monitor mode
             if Beskar.configuration.monitor_only?
-              log_monitor_only_action(ip_address, analysis_result, new_count, threshold)
+              log_monitor_only_action(ip_address, analysis_result, current_score, threshold)
             end
           else
             Beskar::Logger.debug("[WAF] Not auto-blocking: conditions not met", component: :WAF)
           end
 
-          new_count
+          current_score
         end
 
-        # Get current violation count for an IP
-        def get_violation_count(ip_address)
+        # Get current risk score for an IP (with decay applied)
+        def get_current_score(ip_address)
+          violations = get_violations(ip_address)
+          calculate_current_score(violations, waf_config)
+        end
+
+        # Get violations for an IP
+        def get_violations(ip_address)
           cache_key = "beskar:waf_violations:#{ip_address}"
-          Rails.cache.read(cache_key) || 0
+          Rails.cache.read(cache_key) || []
+        end
+
+        # Get violation count for an IP (number of violations tracked)
+        def get_violation_count(ip_address)
+          get_violations(ip_address).size
         end
 
         # Reset violations for an IP
@@ -328,6 +357,48 @@ module Beskar
         end
 
         private
+
+        # Calculate current cumulative score with decay applied
+        def calculate_current_score(violations, config)
+          return 0.0 if violations.empty?
+          return violations.sum { |v| v[:score] } unless config[:decay_enabled]
+
+          now = Time.current.to_i
+          decay_rates = config[:decay_rates] || {}
+
+          violations.sum do |v|
+            age_seconds = now - v[:timestamp]
+            age_minutes = age_seconds / 60.0
+
+            # Get half-life for this severity (in minutes)
+            half_life = decay_rates[v[:severity]] || 60
+
+            # Exponential decay: score * (1/2)^(age/half_life)
+            # Equivalent to: score * e^(-ln(2) * age / half_life)
+            decay_factor = Math.exp(-Math.log(2) * age_minutes / half_life)
+
+            v[:score] * decay_factor
+          end
+        end
+
+        # Prune violations that are outside the window or exceed max tracked
+        def prune_violations(violations, config)
+          now = Time.current.to_i
+          window_seconds = (config[:violation_window] || 6.hours).to_i
+          max_tracked = config[:max_violations_tracked] || 50
+
+          # Remove violations outside the time window
+          recent = violations.select do |v|
+            (now - v[:timestamp]) <= window_seconds
+          end
+
+          # Keep only the most recent violations if we exceed max_tracked
+          if recent.size > max_tracked
+            recent.sort_by { |v| -v[:timestamp] }.first(max_tracked)
+          else
+            recent
+          end
+        end
 
         # Get WAF configuration
         def waf_config
@@ -344,7 +415,7 @@ module Beskar
         end
 
         # Log WAF violation
-        def log_violation(ip_address, analysis_result, violation_count)
+        def log_violation(ip_address, analysis_result, current_score, violation_count)
           severity_emoji = {
             critical: "🚨",
             high: "⚠️",
@@ -357,7 +428,7 @@ module Beskar
           monitor_mode_notice = Beskar.configuration.monitor_only? ? " [MONITOR-ONLY MODE]" : ""
 
           Beskar::Logger.warn("#{emoji} Vulnerability scan detected#{monitor_mode_notice} " \
-            "(#{violation_count} violations) - " \
+            "(score: #{current_score.round(2)}, violations: #{violation_count}) - " \
             "IP: #{ip_address}, " \
             "Severity: #{analysis_result[:highest_severity]}, " \
             "Patterns: #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}, " \
@@ -365,12 +436,12 @@ module Beskar
         end
 
         # Log what would happen in monitor-only mode (but don't actually block)
-        def log_monitor_only_action(ip_address, analysis_result, violation_count, threshold)
+        def log_monitor_only_action(ip_address, analysis_result, current_score, threshold)
           config = waf_config
-          duration = calculate_block_duration(violation_count, config)
+          duration = calculate_block_duration(current_score, config)
 
           Beskar::Logger.warn("🔍 MONITOR-ONLY: IP #{ip_address} WOULD BE BLOCKED " \
-            "(threshold reached: #{violation_count}/#{threshold} violations) - " \
+            "(score threshold reached: #{current_score.round(2)}/#{threshold}) - " \
             "Duration would be: #{duration ? "#{duration / 3600.0} hours" : 'PERMANENT'}, " \
             "Severity: #{analysis_result[:highest_severity]}, " \
             "Patterns: #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}. " \
@@ -378,11 +449,11 @@ module Beskar
         end
 
         # Create security event for WAF violation
-        def create_security_event(ip_address, analysis_result)
+        def create_security_event(ip_address, analysis_result, current_score)
           config = waf_config
           violation_count = get_violation_count(ip_address)
-          threshold = config[:block_threshold] || 3
-          would_be_blocked = violation_count >= threshold
+          threshold = config[:score_threshold] || 150
+          would_be_blocked = current_score >= threshold
 
           Beskar::SecurityEvent.create!(
             event_type: 'waf_violation',
@@ -396,7 +467,8 @@ module Beskar
               monitor_only_mode: Beskar.configuration.monitor_only?,
               would_be_blocked: would_be_blocked,
               violation_count: violation_count,
-              block_threshold: threshold
+              current_score: current_score.round(2),
+              score_threshold: threshold
             }
           )
         rescue => e
@@ -404,9 +476,10 @@ module Beskar
         end
 
         # Auto-block an IP after threshold violations
-        def auto_block_ip(ip_address, analysis_result, violation_count)
+        def auto_block_ip(ip_address, analysis_result, current_score)
           config = waf_config
-          duration = calculate_block_duration(violation_count, config)
+          duration = calculate_block_duration(current_score, config)
+          violation_count = get_violation_count(ip_address)
 
           Beskar::Logger.debug("[WAF] Attempting to ban IP #{ip_address} with duration: #{duration.inspect}", component: :WAF)
 
@@ -416,9 +489,10 @@ module Beskar
               reason: 'waf_violation',
               duration: duration,
               permanent: duration.nil?,
-              details: "WAF violations: #{violation_count} - #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}",
+              details: "WAF score: #{current_score.round(2)} (#{violation_count} violations) - #{analysis_result[:patterns].map { |p| p[:description] }.join(', ')}",
               metadata: {
                 violation_count: violation_count,
+                risk_score: current_score.round(2),
                 patterns: analysis_result[:patterns],
                 highest_severity: analysis_result[:highest_severity],
                 blocked_at: Time.current
@@ -426,7 +500,7 @@ module Beskar
             )
 
             Beskar::Logger.warn("🔒 Auto-blocked IP #{ip_address} " \
-              "after #{violation_count} violations " \
+              "with score #{current_score.round(2)} (#{violation_count} violations) " \
               "(duration: #{duration ? "#{duration / 3600} hours" : 'permanent'}), " \
               "Ban ID: #{banned_ip.id}", component: :WAF)
           rescue => e
@@ -435,14 +509,22 @@ module Beskar
           end
         end
 
-        # Calculate block duration based on violation count
-        def calculate_block_duration(violation_count, config)
-          return nil if config[:permanent_block_after] && violation_count >= config[:permanent_block_after]
+        # Calculate block duration based on cumulative score
+        def calculate_block_duration(current_score, config)
+          permanent_threshold = config[:permanent_block_after]
+          return nil if permanent_threshold && current_score >= permanent_threshold
 
-          # Default escalating durations: 1h, 6h, 24h, 7d, permanent
+          # Default escalating durations: 1h, 6h, 24h, 7d
           base_durations = config[:block_durations] || [1.hour, 6.hours, 24.hours, 7.days]
-          index = [violation_count - (config[:block_threshold] || 3), base_durations.length - 1].min
-          base_durations[index]
+          score_threshold = config[:score_threshold] || 150
+
+          # Calculate how many times over the threshold we are
+          # 150-300 = 1x = 1 hour
+          # 300-450 = 2x = 6 hours
+          # 450-600 = 3x = 24 hours
+          # 600+ = 4x = 7 days
+          multiplier = ((current_score / score_threshold).floor - 1).clamp(0, base_durations.length - 1)
+          base_durations[multiplier]
         end
 
         # Convert severity level to risk score

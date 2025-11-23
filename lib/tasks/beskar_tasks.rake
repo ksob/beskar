@@ -37,8 +37,17 @@ namespace :beskar do
     end
 
     puts "📝 Creating initializer..."
-    template_path = File.expand_path("../beskar/templates/beskar_initializer.rb", __dir__)
-    FileUtils.cp(template_path, initializer_path)
+    template_path = File.expand_path("../generators/beskar/install/templates/initializer.rb.tt", __dir__)
+
+    # Read the template and process ERB (Rails will be available in the rake task context)
+    template_content = File.read(template_path)
+    erb = ERB.new(template_content, trim_mode: '-')
+
+    # Evaluate the ERB template in a context where Rails is available
+    processed_content = erb.result(binding)
+
+    # Write the processed initializer
+    File.write(initializer_path, processed_content)
     puts "✓ Created config/initializers/beskar.rb"
     puts
 

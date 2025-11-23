@@ -235,12 +235,20 @@ Beskar.configure do |config|
   # Defaults shown here - use [:key] syntax to preserve other defaults
   config.waf[:enabled] = true                        # Master switch for WAF
   # config.waf[:auto_block] = true                   # Default: true
-  # config.waf[:block_threshold] = 3                 # Default: 3 (production often uses 2)
-  # config.waf[:violation_window] = 1.hour           # Default: 1 hour
+  # config.waf[:score_threshold] = 150               # Default: 150 (cumulative risk score before blocking)
+  # config.waf[:violation_window] = 6.hours          # Default: 6 hours (max time to track violations)
   # config.waf[:block_durations] = [1.hour, 6.hours, 24.hours, 7.days] # Escalating bans
-  # config.waf[:permanent_block_after] = 5           # Permanent after 5 violations
+  # config.waf[:permanent_block_after] = 500         # Permanent after cumulative score reaches 500
   # config.waf[:create_security_events] = true       # Log to SecurityEvent table
   # config.waf[:record_not_found_exclusions] = []    # Regex patterns for false positives
+  # config.waf[:decay_enabled] = true                # Enable exponential decay of violation scores
+  # config.waf[:decay_rates] = {                     # Decay rates by severity (half-life in minutes)
+  #   critical: 360,  # 6 hour half-life
+  #   high: 120,      # 2 hour half-life
+  #   medium: 45,     # 45 minute half-life
+  #   low: 15         # 15 minute half-life
+  # }
+  # config.waf[:max_violations_tracked] = 50         # Maximum violations to track per IP
 
   # === Risk-Based Account Locking ===
   # Automatically lock accounts when authentication risk score exceeds threshold
@@ -474,68 +482,155 @@ Beskar::Services::IpWhitelist.clear_cache!
 
 ### Web Application Firewall (WAF)
 
-Beskar's WAF detects and blocks vulnerability scanning attempts across 10 attack categories:
+Beskar's WAF uses a **score-based blocking system with exponential decay** to intelligently detect and block vulnerability scanning attempts across 11 attack categories:
 
 **Attack Categories Detected:**
-1. **WordPress Scans** (High Severity) - `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`
-2. **PHP Admin Panels** (High Severity) - `/phpmyadmin`, `/admin.php`, `/phpinfo.php`
-3. **Config Files** (Critical Severity) - `/.env`, `/.git`, `/database.yml`
-4. **Path Traversal** (Critical Severity) - `/../../../etc/passwd`, URL encoded variants
-5. **Framework Debug** (Medium Severity) - `/rails/info/routes`, `/__debug__`, `/telescope`
-6. **CMS Detection** (Medium Severity) - `/joomla`, `/drupal`, `/magento`
-7. **Common Exploits** (Critical Severity) - `/shell.php`, `/c99.php`, `/webshell`
-8. **ActionController::UnknownFormat** (Medium Severity) - Detects requests for unusual formats like `/users/1.exe`, `/api/data.bat` that trigger Rails format exceptions, indicating potential scanning
-9. **ActionDispatch::RemoteIp::IpSpoofAttackError** (Critical Severity) - Detects IP spoofing attempts when conflicting IP headers are present
-10. **ActionDispatch::Http::MimeNegotiation::InvalidType** (Medium Severity) - Detects invalid MIME type requests like `GET "../../../../../../../../etc/passwd{{"` that indicate scanner activity
-11. **ActiveRecord::RecordNotFound** (Low Severity) - Detects potential record enumeration scans like `/admin/users/999999`, with configurable exclusions to prevent false positives
+1. **WordPress Scans** (High: 80 points) - `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`
+2. **PHP Admin Panels** (High: 80 points) - `/phpmyadmin`, `/admin.php`, `/phpinfo.php`
+3. **Config Files** (Critical: 95 points) - `/.env`, `/.git`, `/database.yml`
+4. **Path Traversal** (Critical: 95 points) - `/../../../etc/passwd`, URL encoded variants
+5. **Framework Debug** (Medium: 60 points) - `/rails/info/routes`, `/__debug__`, `/telescope`
+6. **CMS Detection** (Medium: 60 points) - `/joomla`, `/drupal`, `/magento`
+7. **Common Exploits** (Critical: 95 points) - `/shell.php`, `/c99.php`, `/webshell`
+8. **ActionController::UnknownFormat** (Medium: 60 points) - Detects requests for unusual formats like `/users/1.exe`, `/api/data.bat` that trigger Rails format exceptions, indicating potential scanning
+9. **ActionDispatch::RemoteIp::IpSpoofAttackError** (Critical: 95 points) - Detects IP spoofing attempts when conflicting IP headers are present
+10. **ActionDispatch::Http::MimeNegotiation::InvalidType** (Medium: 60 points) - Detects invalid MIME type requests like `GET "../../../../../../../../etc/passwd{{"` that indicate scanner activity
+11. **ActiveRecord::RecordNotFound** (Low: 40 points) - Detects potential record enumeration scans like `/admin/users/999999`, with configurable exclusions to prevent false positives
 
-**Configuration Examples:**
+**How Score-Based Blocking Works:**
+
+Instead of counting violations (1, 2, 3...), Beskar tracks a **cumulative risk score** that decays over time:
+
+- Each violation adds points based on severity (Critical=95, High=80, Medium=60, Low=40)
+- Violations **decay exponentially** based on severity (critical threats persist longer)
+- IP is blocked when cumulative score reaches threshold (default: 150 points)
+- Lower-severity violations decay faster, reducing false positives from legitimate 404s
+
+**Example Scenarios:**
+```ruby
+# Scenario 1: Legitimate user hitting 404s
+10 × RecordNotFound (40 points each) = 400 cumulative
+BUT: Low severity decays with 15-minute half-life
+→ Score drops quickly, no ban triggered
+
+# Scenario 2: Attacker scanning config files
+2 × /.env access (95 points each) = 190 points
+→ Exceeds threshold (150) → Immediate ban
+→ Critical severity persists for 6 hours
+
+# Scenario 3: Mixed attack pattern
+1 × WordPress scan (80) + 1 × Config access (95) = 175
+→ Exceeds threshold → Ban triggered
+→ Different decay rates for each violation type
+```
+
+**Configuration Profiles:**
 
 ```ruby
-# Production - Stricter protection (recommended after monitoring)
+# 🔥 STRICT - High-security environment (financial, healthcare)
 Beskar.configure do |config|
   config.waf[:enabled] = true
   config.waf[:auto_block] = true
-  config.waf[:block_threshold] = 2              # Stricter: 2 violations (default is 3)
-  config.waf[:violation_window] = 30.minutes    # Shorter window for faster response
-  config.waf[:block_durations] = [6.hours, 24.hours, 7.days, 30.days]  # Longer bans
-  config.waf[:permanent_block_after] = 4        # Permanent ban sooner
+  config.waf[:score_threshold] = 100           # Lower threshold = faster blocking
+  config.waf[:violation_window] = 12.hours     # Longer memory
+  config.waf[:permanent_block_after] = 300     # Permanent ban at 300 cumulative score
+  config.waf[:block_durations] = [6.hours, 24.hours, 7.days, 30.days]
 
-  # Exclude certain paths from RecordNotFound detection to prevent false positives
+  # Slower decay = violations persist longer
+  config.waf[:decay_rates] = {
+    critical: 720,  # 12 hour half-life (very persistent)
+    high: 360,      # 6 hour half-life
+    medium: 120,    # 2 hour half-life
+    low: 30         # 30 minute half-life
+  }
+
+  # Exclude legitimate 404-prone paths
   config.waf[:record_not_found_exclusions] = [
-    %r{/posts/.*},                # Don't flag missing blog posts as scanning
-    %r{/articles/\d+},            # Don't flag missing articles
-    %r{/public/.*}                # Ignore public content paths
+    %r{/posts/.*}, %r{/articles/\d+}, %r{/public/.*}
   ]
 end
 
-# Development - Monitor only (recommended initially)
+# ⚖️ BALANCED - Default production (recommended for most apps)
 Beskar.configure do |config|
-  config.monitor_only = true              # Log but never block
+  config.waf[:enabled] = true
+  config.waf[:auto_block] = true
+  config.waf[:score_threshold] = 150           # Default threshold
+  config.waf[:violation_window] = 6.hours      # Standard window
+  config.waf[:permanent_block_after] = 500     # Permanent at 500 cumulative
+  config.waf[:decay_enabled] = true
+  # Uses default decay rates (critical: 360, high: 120, medium: 45, low: 15)
+
+  config.waf[:record_not_found_exclusions] = [
+    %r{/posts/.*}, %r{/products/[\\w-]+}
+  ]
+end
+
+# 🧪 PERMISSIVE - High-traffic public site with many 404s
+Beskar.configure do |config|
+  config.waf[:enabled] = true
+  config.waf[:auto_block] = true
+  config.waf[:score_threshold] = 200           # Higher tolerance
+  config.waf[:violation_window] = 3.hours      # Shorter memory
+  config.waf[:permanent_block_after] = 800     # Rare permanent bans
+
+  # Faster decay = violations forgotten quickly
+  config.waf[:decay_rates] = {
+    critical: 180,  # 3 hour half-life
+    high: 60,       # 1 hour half-life
+    medium: 20,     # 20 minute half-life
+    low: 5          # 5 minute half-life (very forgiving)
+  }
+
+  # Extensive exclusions for public content
+  config.waf[:record_not_found_exclusions] = [
+    %r{/posts/.*}, %r{/articles/.*}, %r{/tags/.*},
+    %r{/search/.*}, %r{/public/.*}, %r{/assets/.*}
+  ]
+end
+
+# 🔍 MONITOR ONLY - Testing/staging (recommended before going live)
+Beskar.configure do |config|
+  config.monitor_only = true                   # Log violations but NEVER block
   config.waf[:enabled] = true
   config.waf[:create_security_events] = true
-
-  config.ip_whitelist = ["127.0.0.1", "::1"]  # Whitelist localhost
+  config.ip_whitelist = ["127.0.0.1", "::1"]   # Whitelist localhost
 end
 ```
 
 **Blocking Behavior:**
 
-With **default settings** (threshold: 3):
-- **First violation**: Logged, violation count incremented
-- **Threshold reached (3rd violation)**: IP automatically banned for 1 hour
-- **Repeat violations**: Ban duration escalates: 1h → 6h → 24h → 7d → **permanent**
-- **Permanent block**: After 5 violations (configurable), IP is permanently banned
+With **default settings** (score_threshold: 150):
+- **Violations accumulate**: Each violation adds points based on severity
+- **Score threshold reached**: IP automatically banned when cumulative score ≥ 150
+- **Exponential decay**: Violations lose impact over time based on severity
+- **Ban duration escalates**: Based on total score accumulated:
+  - 150-300 points → 1 hour ban
+  - 300-450 points → 6 hour ban
+  - 450-600 points → 24 hour ban
+  - 600+ points → 7 day ban
+  - 500+ cumulative score → **permanent ban**
 
-> **Production Tip:** After monitoring for 24-48 hours, consider using `block_threshold: 2` for more aggressive protection against persistent attackers.
-- **Monitor mode**: Logs all violations but never blocks (useful for tuning)
-- **Exception-based violations**: Rails exceptions (UnknownFormat, RecordNotFound, IP spoofing) count toward the same threshold
-- **Mixed violations**: Regular WAF patterns and exception detections accumulate together
+**Key Advantages:**
+- **Fewer false positives**: Low-severity violations (404s) decay quickly
+- **Faster response to serious threats**: Critical violations persist longer
+- **Adaptive blocking**: Mixed attack patterns properly weighted
+- **Monitor mode compatible**: Set `config.monitor_only = true` to log without blocking
+
+> **Production Tip:** Start with monitor mode for 24-48 hours to observe your traffic patterns, then adjust thresholds and exclusions before enabling blocking.
 
 **Check WAF status:**
 ```ruby
-# Check if WAF detected threats
+# Get current risk score (with decay applied)
+current_score = Beskar::Services::Waf.get_current_score(ip_address)
+# => 145.3 (below threshold, not blocked)
+
+# Get number of violations tracked
 violation_count = Beskar::Services::Waf.get_violation_count(ip_address)
+# => 3 (number of violations being tracked)
+
+# Get detailed violation records
+violations = Beskar::Services::Waf.get_violations(ip_address)
+# => [{timestamp: ..., score: 95, severity: :critical, category: :config_files}, ...]
 
 # Reset violations (admin action)
 Beskar::Services::Waf.reset_violations(ip_address)

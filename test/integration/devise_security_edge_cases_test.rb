@@ -359,17 +359,20 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
 
   test "handles IP spoofing attempts" do
     # Test various X-Forwarded-For header manipulations
-    base_ip = worker_ip(52)
+    # Note: Each attempt uses a unique IP to avoid cumulative WAF blocking
+    # IP spoofing detection creates critical violations (95 points), and 2 violations
+    # would exceed the default threshold (150) and cause blocking
     spoofing_attempts = [
       "127.0.0.1", # Localhost spoofing
       "10.0.0.1", # Private network
-      "#{base_ip}, 203.0.113.1", # Multiple IPs
-      "203.0.113.1, #{base_ip}", # Reversed order
-      "unknown, 203.0.113.1", # Unknown proxy
-      "203.0.113.1:8080" # With port
+      "203.0.113.1, 203.0.113.2", # Multiple IPs
+      "203.0.113.3, 203.0.113.4", # Reversed order
+      "unknown, 203.0.113.5", # Unknown proxy
+      "203.0.113.6:8080" # With port
     ]
 
     spoofing_attempts.each_with_index do |forwarded_for, index|
+      # Use unique IP for each test to prevent cumulative WAF blocking
       post "/devise_users/sign_in", params: {
         devise_user: {
           email: "spoof#{index}@example.com",
@@ -377,7 +380,7 @@ class DeviseSecurityEdgeCasesTest < ActionDispatch::IntegrationTest
         }
       }, headers: {
         "X-Forwarded-For" => forwarded_for,
-        "X-Real-IP" => worker_ip(90) # Different from X-Forwarded-For
+        "X-Real-IP" => worker_ip(90 + index) # Unique IP per attempt
       }
 
       # Devise returns 422 for invalid parameters but still shows the form

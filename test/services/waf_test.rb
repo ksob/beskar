@@ -6,9 +6,17 @@ class WafTest < ActiveSupport::TestCase
     Beskar.configuration.waf = {
       enabled: true,
       auto_block: true,
-      block_threshold: 3,
-      violation_window: 1.hour,
-      create_security_events: true
+      score_threshold: 150,
+      violation_window: 6.hours,
+      create_security_events: true,
+      decay_enabled: true,
+      decay_rates: {
+        critical: 360,
+        high: 120,
+        medium: 45,
+        low: 15
+      },
+      max_violations_tracked: 50
     }
   end
 
@@ -193,77 +201,108 @@ class WafTest < ActiveSupport::TestCase
   end
 
   # Violation tracking
-  test "record_violation increments violation count" do
+  test "record_violation accumulates risk score" do
     ip = "10.0.0.100"
     request = create_mock_request("/wp-admin/", ip: ip)
     analysis = Beskar::Services::Waf.analyze_request(request)
-    
-    count1 = Beskar::Services::Waf.record_violation(ip, analysis)
-    assert_equal 1, count1
-    
-    count2 = Beskar::Services::Waf.record_violation(ip, analysis)
-    assert_equal 2, count2
-    
-    count3 = Beskar::Services::Waf.record_violation(ip, analysis)
-    assert_equal 3, count3
+
+    # WordPress scan has :high severity = 80 points
+    score1 = Beskar::Services::Waf.record_violation(ip, analysis)
+    assert_equal 80, score1.round
+
+    score2 = Beskar::Services::Waf.record_violation(ip, analysis)
+    assert_in_delta 160, score2, 5 # Allow for slight decay
+
+    score3 = Beskar::Services::Waf.record_violation(ip, analysis)
+    assert_in_delta 240, score3, 10 # Allow for more decay
   end
 
-  test "get_violation_count returns current count" do
+  test "get_violation_count returns number of tracked violations" do
     ip = "10.0.0.101"
-    
+
     assert_equal 0, Beskar::Services::Waf.get_violation_count(ip)
-    
-    Rails.cache.write("beskar:waf_violations:#{ip}", 5, expires_in: 1.hour)
-    
-    assert_equal 5, Beskar::Services::Waf.get_violation_count(ip)
+
+    request = create_mock_request("/wp-admin/", ip: ip)
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # Record violations
+    Beskar::Services::Waf.record_violation(ip, analysis)
+    assert_equal 1, Beskar::Services::Waf.get_violation_count(ip)
+
+    Beskar::Services::Waf.record_violation(ip, analysis)
+    assert_equal 2, Beskar::Services::Waf.get_violation_count(ip)
   end
 
-  test "reset_violations clears count" do
+  test "reset_violations clears violations" do
     ip = "10.0.0.102"
-    Rails.cache.write("beskar:waf_violations:#{ip}", 10, expires_in: 1.hour)
-    
-    assert_equal 10, Beskar::Services::Waf.get_violation_count(ip)
-    
+    request = create_mock_request("/wp-admin/", ip: ip)
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # Record some violations
+    5.times { Beskar::Services::Waf.record_violation(ip, analysis) }
+    assert_equal 5, Beskar::Services::Waf.get_violation_count(ip)
+
+    # Reset should clear them
     Beskar::Services::Waf.reset_violations(ip)
-    
     assert_equal 0, Beskar::Services::Waf.get_violation_count(ip)
   end
 
   # Auto-blocking
-  test "should_block? returns false when violations below threshold" do
+  test "should_block? returns false when score below threshold" do
     ip = "10.0.0.103"
-    Rails.cache.write("beskar:waf_violations:#{ip}", 2, expires_in: 1.hour)
-    
+    request = create_mock_request("/wp-admin/", ip: ip)
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # High severity = 80 points, threshold is 150
+    Beskar::Services::Waf.record_violation(ip, analysis)
+
     assert_equal false, Beskar::Services::Waf.should_block?(ip)
   end
 
-  test "should_block? returns true when violations meet threshold" do
+  test "should_block? returns true when score meets threshold" do
     ip = "10.0.0.104"
-    Rails.cache.write("beskar:waf_violations:#{ip}", 3, expires_in: 1.hour)
-    
+    request = create_mock_request("/.env", ip: ip) # Critical = 95 points
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # Record two critical violations: 95 + 95 = 190 > 150
+    Beskar::Services::Waf.record_violation(ip, analysis)
+    Beskar::Services::Waf.record_violation(ip, analysis)
+
     assert Beskar::Services::Waf.should_block?(ip)
   end
 
-  test "should_block? returns true when violations exceed threshold" do
+  test "should_block? returns true when score exceeds threshold" do
     ip = "10.0.0.105"
-    Rails.cache.write("beskar:waf_violations:#{ip}", 5, expires_in: 1.hour)
-    
+    request = create_mock_request("/.env", ip: ip) # Critical = 95 points
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # Record three critical violations: 95 + 95 + 95 = 285 > 150
+    3.times { Beskar::Services::Waf.record_violation(ip, analysis) }
+
     assert Beskar::Services::Waf.should_block?(ip)
   end
 
   test "should_block? returns false when WAF disabled" do
     Beskar.configuration.waf[:enabled] = false
     ip = "10.0.0.106"
-    Rails.cache.write("beskar:waf_violations:#{ip}", 10, expires_in: 1.hour)
-    
+    request = create_mock_request("/.env", ip: ip)
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # Record enough violations to exceed threshold
+    3.times { Beskar::Services::Waf.record_violation(ip, analysis) }
+
     assert_equal false, Beskar::Services::Waf.should_block?(ip)
   end
 
   test "should_block? returns false when auto_block disabled" do
     Beskar.configuration.waf[:auto_block] = false
     ip = "10.0.0.107"
-    Rails.cache.write("beskar:waf_violations:#{ip}", 10, expires_in: 1.hour)
-    
+    request = create_mock_request("/.env", ip: ip)
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # Record enough violations to exceed threshold
+    3.times { Beskar::Services::Waf.record_violation(ip, analysis) }
+
     assert_equal false, Beskar::Services::Waf.should_block?(ip)
   end
 
@@ -298,26 +337,25 @@ class WafTest < ActiveSupport::TestCase
   end
 
   # Auto-blocking on threshold
-  test "record_violation auto-blocks IP after threshold violations" do
+  test "record_violation auto-blocks IP after score threshold reached" do
     Beskar.configuration.waf[:auto_block] = true
-    Beskar.configuration.waf[:block_threshold] = 3
-    
+    Beskar.configuration.waf[:score_threshold] = 150
+
     ip = "10.0.0.110"
-    request = create_mock_request("/wp-admin/", ip: ip)
+    request = create_mock_request("/.env", ip: ip) # Critical = 95 points
     analysis = Beskar::Services::Waf.analyze_request(request)
-    
-    # First two violations should not block
-    Beskar::Services::Waf.record_violation(ip, analysis)
+
+    # First violation should not block (95 < 150)
     Beskar::Services::Waf.record_violation(ip, analysis)
     assert_equal false, Beskar::BannedIp.banned?(ip)
-    
-    # Third violation should trigger block
+
+    # Second violation should trigger block (95 + 95 = 190 > 150)
     assert_difference 'Beskar::BannedIp.count', 1 do
       Beskar::Services::Waf.record_violation(ip, analysis)
     end
-    
+
     assert Beskar::BannedIp.banned?(ip)
-    
+
     banned_ip = Beskar::BannedIp.find_by(ip_address: ip)
     assert_equal 'waf_violation', banned_ip.reason
   end
