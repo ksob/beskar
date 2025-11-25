@@ -33,7 +33,7 @@
 -   **Brute Force Detection:** Advanced pattern recognition to detect single account attacks vs credential stuffing attempts, with automatic IP banning.
 -   **IP Whitelisting:** Allow trusted IPs (office networks, partners, security scanners) to bypass blocking while maintaining full audit logs. Supports individual IPs and CIDR notation.
 -   **Persistent IP Blocking:** Hybrid cache + database blocking system that survives application restarts. Auto-bans IPs after authentication abuse or excessive rate limiting violations.
--   **Web Application Firewall (WAF):** Real-time detection and blocking of vulnerability scanning attempts across 10 attack categories including Rails exception analysis (WordPress, PHP admin panels, config files, path traversal, framework debug, CMS detection, common exploits, UnknownFormat, IP spoofing, RecordNotFound enumeration). Includes escalating ban durations, monitor-only mode, and configurable exclusion patterns.
+-   **Web Application Firewall (WAF):** Real-time detection and blocking of vulnerability scanning attempts across 12 attack categories including Rails exception analysis (WordPress scans, WordPress static files, PHP admin panels, config files, path traversal, framework debug, CMS detection, common exploits, UnknownFormat, IP spoofing, InvalidType, RecordNotFound enumeration). Includes escalating ban durations, monitor-only mode, and configurable exclusion patterns.
 -   **Security Event Tracking:** Comprehensive logging of authentication events with risk scoring and metadata extraction.
 -   **IP Geolocation:** MaxMind GeoLite2-City database integration for country/city location, coordinates, timezone, and enhanced risk scoring (configurable, database not included due to licensing).
 -   **Geographic Anomaly Detection:** Haversine-based impossible travel detection and location-based risk assessment.
@@ -482,26 +482,27 @@ Beskar::Services::IpWhitelist.clear_cache!
 
 ### Web Application Firewall (WAF)
 
-Beskar's WAF uses a **score-based blocking system with exponential decay** to intelligently detect and block vulnerability scanning attempts across 11 attack categories:
+Beskar's WAF uses a **score-based blocking system with exponential decay** to intelligently detect and block vulnerability scanning attempts across 12 attack categories:
 
 **Attack Categories Detected:**
-1. **WordPress Scans** (High: 80 points) - `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`
-2. **PHP Admin Panels** (High: 80 points) - `/phpmyadmin`, `/admin.php`, `/phpinfo.php`
-3. **Config Files** (Critical: 95 points) - `/.env`, `/.git`, `/database.yml`
-4. **Path Traversal** (Critical: 95 points) - `/../../../etc/passwd`, URL encoded variants
-5. **Framework Debug** (Medium: 60 points) - `/rails/info/routes`, `/__debug__`, `/telescope`
-6. **CMS Detection** (Medium: 60 points) - `/joomla`, `/drupal`, `/magento`
-7. **Common Exploits** (Critical: 95 points) - `/shell.php`, `/c99.php`, `/webshell`
-8. **ActionController::UnknownFormat** (Medium: 60 points) - Detects requests for unusual formats like `/users/1.exe`, `/api/data.bat` that trigger Rails format exceptions, indicating potential scanning
-9. **ActionDispatch::RemoteIp::IpSpoofAttackError** (Critical: 95 points) - Detects IP spoofing attempts when conflicting IP headers are present
-10. **ActionDispatch::Http::MimeNegotiation::InvalidType** (Medium: 60 points) - Detects invalid MIME type requests like `GET "../../../../../../../../etc/passwd{{"` that indicate scanner activity
-11. **ActiveRecord::RecordNotFound** (Low: 40 points) - Detects potential record enumeration scans like `/admin/users/999999`, with configurable exclusions to prevent false positives
+1. **WordPress Scans** (High: 80 points) - `/wp-admin`, `/wp-login.php`, `/wp-content/*.php`, `/xmlrpc.php`
+2. **WordPress Static Files** (Low: 30 points) - `/wp-content/*.css`, `/wp-content/*.js`, `/wp-content/*.jpg` (broken links, not attacks)
+3. **PHP Admin Panels** (High: 80 points) - `/phpmyadmin`, `/admin.php`, `/phpinfo.php`
+4. **Config Files** (Critical: 95 points) - `/.env`, `/.git`, `/database.yml`
+5. **Path Traversal** (Critical: 95 points) - `/../../../etc/passwd`, URL encoded variants
+6. **Framework Debug** (Medium: 60 points) - `/rails/info/routes`, `/__debug__`, `/telescope`
+7. **CMS Detection** (Medium: 60 points) - `/joomla`, `/drupal`, `/magento`
+8. **Common Exploits** (Critical: 95 points) - `/shell.php`, `/c99.php`, `/webshell`
+9. **ActionController::UnknownFormat** (Medium: 60 points) - Detects requests for unusual formats like `/users/1.exe`, `/api/data.bat` that trigger Rails format exceptions, indicating potential scanning
+10. **ActionDispatch::RemoteIp::IpSpoofAttackError** (Critical: 95 points) - Detects IP spoofing attempts when conflicting IP headers are present
+11. **ActionDispatch::Http::MimeNegotiation::InvalidType** (Medium: 60 points) - Detects invalid MIME type requests like `GET "../../../../../../../../etc/passwd{{"` that indicate scanner activity
+12. **ActiveRecord::RecordNotFound** (Low: 30 points) - Detects potential record enumeration scans like `/admin/users/999999`, with configurable exclusions to prevent false positives
 
 **How Score-Based Blocking Works:**
 
 Instead of counting violations (1, 2, 3...), Beskar tracks a **cumulative risk score** that decays over time:
 
-- Each violation adds points based on severity (Critical=95, High=80, Medium=60, Low=40)
+- Each violation adds points based on severity (Critical=95, High=80, Medium=60, Low=30)
 - Violations **decay exponentially** based on severity (critical threats persist longer)
 - IP is blocked when cumulative score reaches threshold (default: 150 points)
 - Lower-severity violations decay faster, reducing false positives from legitimate 404s
@@ -509,7 +510,7 @@ Instead of counting violations (1, 2, 3...), Beskar tracks a **cumulative risk s
 **Example Scenarios:**
 ```ruby
 # Scenario 1: Legitimate user hitting 404s
-10 × RecordNotFound (40 points each) = 400 cumulative
+10 × RecordNotFound (30 points each) = 300 cumulative
 BUT: Low severity decays with 15-minute half-life
 → Score drops quickly, no ban triggered
 
@@ -824,7 +825,8 @@ Security events are logged to the `beskar_security_events` table for analysis an
 
 | Category | Severity | Example Patterns | Risk Score |
 |----------|----------|------------------|------------|
-| WordPress Scans | High | `/wp-admin`, `/wp-login.php`, `/xmlrpc.php` | 80 |
+| WordPress Scans | High | `/wp-admin`, `/wp-login.php`, `/wp-content/*.php` | 80 |
+| WordPress Static Files | Low | `/wp-content/*.css`, `/wp-content/*.jpg` | 30 |
 | PHP Admin Panels | High | `/phpmyadmin`, `/admin.php`, `/phpinfo.php` | 80 |
 | Config Files | **Critical** | `/.env`, `/.git`, `/database.yml`, `/config.php` | **95** |
 | Path Traversal | **Critical** | `/../../../etc/passwd`, `%2e%2e/` | **95** |
@@ -834,7 +836,7 @@ Security events are logged to the `beskar_security_events` table for analysis an
 | UnknownFormat Exception | Medium | `/users/1.exe`, `/api/data.bat` | 60 |
 | IP Spoofing Exception | **Critical** | Conflicting IP headers | **95** |
 | Invalid MIME Type Exception | Medium | `GET "../../../../etc/passwd{{"` | 60 |
-| RecordNotFound Exception | Low | `/admin/users/999999` | 40 |
+| RecordNotFound Exception | Low | `/admin/users/999999` | 30 |
 
 **Pattern matching is:**
 - Case-insensitive

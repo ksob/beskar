@@ -33,7 +33,7 @@ module Beskar
           patterns: [
             %r{/wp-admin}i,
             %r{/wp-login\.php}i,
-            %r{/wp-content}i,
+            %r{/wp-content/.*\.php}i,  # PHP files in wp-content are suspicious
             %r{/wp-includes}i,
             %r{/xmlrpc\.php}i,
             %r{/wp-config\.php}i,
@@ -42,6 +42,14 @@ module Beskar
           ],
           severity: :high,
           description: "WordPress vulnerability scan"
+        },
+        wordpress_static: {
+          patterns: [
+            %r{/wp-content/.*\.(?:css|js|jpe?g|png|gif|svg|webp|ico|woff2?|ttf|eot|map)$}i,  # Static files in wp-content
+            %r{/wp-content/(?:uploads|themes|plugins)/[^.]*$}i,  # Directory listing attempts
+          ],
+          severity: :low,
+          description: "WordPress static file probe"
         },
         php_admin: {
           patterns: [
@@ -533,7 +541,7 @@ module Beskar
           when :critical then 95
           when :high then 80
           when :medium then 60
-          when :low then 40
+          when :low then 30
           else 50
           end
         end

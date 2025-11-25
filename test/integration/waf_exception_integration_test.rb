@@ -132,7 +132,7 @@ class WafExceptionIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal 1, Beskar::SecurityEvent.count, "Non-excluded path should create security event"
 
     event = Beskar::SecurityEvent.last
-    assert_equal 40, event.risk_score # Low severity
+    assert_equal 30, event.risk_score # Low severity
     assert_equal 'ActiveRecord::RecordNotFound', event.metadata['waf_analysis']['exception_class']
   end
 
@@ -363,7 +363,7 @@ class WafExceptionIntegrationTest < ActionDispatch::IntegrationTest
     assert_raises(ActiveRecord::RecordNotFound) { middleware.call(env) }
 
     event = Beskar::SecurityEvent.last
-    assert_equal 40, event.risk_score
+    assert_equal 30, event.risk_score
   end
 
   test "WAF disabled does not catch exceptions" do

@@ -413,17 +413,152 @@ class WafTest < ActiveSupport::TestCase
   # Violation window expiry
   test "violations expire after violation_window" do
     Beskar.configuration.waf[:violation_window] = 0.1.seconds
-    
+
     ip = "10.0.0.111"
     request = create_mock_request("/wp-admin/", ip: ip)
     analysis = Beskar::Services::Waf.analyze_request(request)
-    
+
     Beskar::Services::Waf.record_violation(ip, analysis)
     assert_equal 1, Beskar::Services::Waf.get_violation_count(ip)
-    
+
     sleep(0.2) # Wait for violation window to expire
-    
+
     # Cache should have expired
     assert_equal 0, Beskar::Services::Waf.get_violation_count(ip)
+  end
+
+  # WordPress static files (low severity)
+  test "analyze_request detects wp-content static files with low severity" do
+    static_paths = [
+      "/wp-content/themes/theme/style.css",
+      "/wp-content/uploads/2024/image.jpg",
+      "/wp-content/uploads/photo.png",
+      "/wp-content/plugins/plugin/script.js",
+      "/wp-content/themes/theme/font.woff2",
+      "/wp-content/uploads/icon.svg"
+    ]
+
+    static_paths.each do |path|
+      request = create_mock_request(path)
+      result = Beskar::Services::Waf.analyze_request(request)
+
+      assert_not_nil result, "Path #{path} should trigger WAF"
+      assert result[:threat_detected]
+      assert_equal :wordpress_static, result[:patterns].first[:category], "Path #{path} should be wordpress_static"
+      assert_equal :low, result[:highest_severity], "Path #{path} should have low severity"
+    end
+  end
+
+  test "analyze_request detects wp-content PHP files with high severity" do
+    # Note: avoid shell.php, c99.php etc. as they match common_exploits (critical)
+    php_paths = [
+      "/wp-content/plugins/plugin.php",
+      "/wp-content/uploads/script.php",
+      "/wp-content/themes/functions.php"
+    ]
+
+    php_paths.each do |path|
+      request = create_mock_request(path)
+      result = Beskar::Services::Waf.analyze_request(request)
+
+      assert_not_nil result, "Path #{path} should trigger WAF"
+      assert result[:threat_detected]
+      assert_includes result[:patterns].map { |p| p[:category] }, :wordpress, "Path #{path} should match wordpress pattern"
+      assert_equal :high, result[:highest_severity], "Path #{path} should have high severity"
+    end
+  end
+
+  test "analyze_request detects path traversal in wp-content with critical severity" do
+    # Path traversal should override the low-severity static pattern
+    traversal_paths = [
+      "/wp-content/../../etc/passwd",
+      "/wp-content/uploads/../../../etc/shadow",
+      "/wp-content/themes/%2e%2e/config"
+    ]
+
+    traversal_paths.each do |path|
+      request = create_mock_request(path)
+      result = Beskar::Services::Waf.analyze_request(request)
+
+      assert_not_nil result, "Path #{path} should trigger WAF"
+      assert result[:threat_detected]
+      assert_equal :critical, result[:highest_severity], "Path #{path} should have critical severity due to path traversal"
+      assert_includes result[:patterns].map { |p| p[:category] }, :path_traversal, "Path #{path} should match path_traversal"
+    end
+  end
+
+  test "analyze_request detects wp-content directory listing with low severity" do
+    directory_paths = [
+      "/wp-content/uploads/",
+      "/wp-content/themes/",
+      "/wp-content/plugins/"
+    ]
+
+    directory_paths.each do |path|
+      request = create_mock_request(path)
+      result = Beskar::Services::Waf.analyze_request(request)
+
+      assert_not_nil result, "Path #{path} should trigger WAF"
+      assert result[:threat_detected]
+      assert_equal :low, result[:highest_severity], "Path #{path} should have low severity"
+    end
+  end
+
+  # Low severity risk score (30 points)
+  test "low severity generates 30 point risk score" do
+    ip = "10.0.0.120"
+    request = create_mock_request("/wp-content/uploads/image.jpg", ip: ip) # Low severity
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    assert_not_nil analysis
+    assert_equal :low, analysis[:highest_severity]
+
+    score = Beskar::Services::Waf.record_violation(ip, analysis)
+    assert_equal 30, score.round, "Low severity should contribute 30 points"
+  end
+
+  test "low severity requires 5 violations to reach threshold" do
+    Beskar.configuration.waf[:score_threshold] = 150
+
+    ip = "10.0.0.121"
+    request = create_mock_request("/wp-content/uploads/image.jpg", ip: ip) # Low = 30 points
+    analysis = Beskar::Services::Waf.analyze_request(request)
+
+    # 4 violations = 120 points (below 150 threshold)
+    4.times { Beskar::Services::Waf.record_violation(ip, analysis) }
+    assert_equal false, Beskar::BannedIp.banned?(ip), "4 low-severity violations should not trigger ban"
+
+    # 5th violation = 150 points (meets threshold)
+    Beskar::Services::Waf.record_violation(ip, analysis)
+    assert Beskar::BannedIp.banned?(ip), "5 low-severity violations should trigger ban"
+  end
+
+  test "severity_to_risk_score returns correct values" do
+    # Test via the behavior since it's a private method
+    severities = {
+      critical: 95,
+      high: 80,
+      medium: 60,
+      low: 30
+    }
+
+    paths_for_severity = {
+      critical: "/.env",
+      high: "/wp-admin/",
+      medium: "/rails/info/routes",
+      low: "/wp-content/uploads/image.jpg"
+    }
+
+    severities.each do |severity, expected_score|
+      ip = "10.0.0.#{130 + severities.keys.index(severity)}"
+      request = create_mock_request(paths_for_severity[severity], ip: ip)
+      analysis = Beskar::Services::Waf.analyze_request(request)
+
+      assert_not_nil analysis, "Expected analysis for #{severity} path"
+      assert_equal severity, analysis[:highest_severity], "Expected #{severity} severity"
+
+      score = Beskar::Services::Waf.record_violation(ip, analysis)
+      assert_equal expected_score, score.round, "#{severity} severity should contribute #{expected_score} points"
+    end
   end
 end
