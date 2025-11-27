@@ -49,10 +49,13 @@ class ActiveSupport::TestCase
     Beskar.configuration = Beskar::Configuration.new
   end
 
-  # Reset configuration before each test to ensure isolation
+  # Reset configuration and cache before each test to ensure isolation
   setup do
     # Only reset if not already done by a subclass (like BeskarTestBase)
     unless defined?(@beskar_config_reset)
+      # Clear cache to prevent cross-test pollution from WAF violations and banned IPs
+      Rails.cache.clear
+
       Beskar.configuration = Beskar::Configuration.new
       Beskar.configuration.security_tracking[:enabled] = true
       Beskar.configuration.security_tracking[:track_successful_logins] = true
@@ -84,6 +87,10 @@ class ActionDispatch::IntegrationTest
 
   setup do
     Rails.application.reload_routes_unless_loaded
+
+    # Clear cache before each integration test to prevent cross-test pollution
+    # This is critical for WAF violations and banned IPs that use cache
+    Rails.cache.clear
 
     # Reset Beskar configuration before each integration test
     Beskar.configuration = Beskar::Configuration.new
