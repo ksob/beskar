@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class CreateBeskarSecurityEvents < ActiveRecord::Migration[8.0]
+class CreateBeskarSecurityEvents < ActiveRecord::Migration[7.0]
   def change
     create_table :beskar_security_events do |t|
       t.references :user, polymorphic: true, null: true, index: true
