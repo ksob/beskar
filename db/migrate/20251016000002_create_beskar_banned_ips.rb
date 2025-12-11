@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class CreateBeskarBannedIps < ActiveRecord::Migration[8.0]
+class CreateBeskarBannedIps < ActiveRecord::Migration[7.0]
   def change
     create_table :beskar_banned_ips do |t|
       t.string :ip_address, null: false
