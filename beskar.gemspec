@@ -24,7 +24,7 @@ Built as a mountable Rails Engine, it leverages core framework features like Act
     Dir["{app,config,db,lib}/**/*", "MIT-LICENSE", "Rakefile", "README.md", "CHANGELOG.md"]
   end
 
-  spec.add_dependency "rails", ">= 8.0.0"
+  spec.add_dependency "rails", ">= 7.0.0"
   spec.add_dependency "csv", "~> 3.0"
 
   # Optional: MaxMind DB reader for GeoIP functionality
